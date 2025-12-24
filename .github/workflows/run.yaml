@@ -26,49 +26,26 @@ jobs:
           import WebKit
           import WKWebViewJavascriptBridge
           import AVFoundation
-          import UserNotifications
-          import BackgroundTasks
+          import UserNotifications // Added for notifications
 
           @main
           class AppDelegate: UIResponder, UIApplicationDelegate {
               var window: UIWindow?
-              var mainViewController: ViewController?
-          
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
                   let vc = ViewController()
-                  mainViewController = vc
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
-          
-                  BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
-                      self.handleAppRefresh(task: task as! BGAppRefreshTask)
-                  }
-          
                   return true
               }
-          
-              func handleAppRefresh(task: BGAppRefreshTask) {
-                  let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
-                  request.earliestBeginDate = Date(timeIntervalSinceNow: 3600)
-                  try? BGTaskScheduler.shared.submit(request)
-          
-                  DispatchQueue.main.async {
-                      // FIXED: Changed callHandler to call(handlerName:data:callback:)
-                      self.mainViewController?.bridge?.call(handlerName: "onBackgroundSync", data: ["time": Date().description]) { response in
-                          task.setTaskCompleted(success: true)
-                      }
-                  }
-              }
           }
-
-
 
           class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate {
               var webView: WKWebView!
               var bridge: WKWebViewJavascriptBridge?
 
 
+              // Add this so notifications show up even when app is in foreground
               func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
                   completionHandler([.banner, .sound])
               }
@@ -78,6 +55,7 @@ jobs:
               override func loadView() {
                   let webConfiguration = WKWebViewConfiguration()
 
+                  // Inject JavaScript into the WKWebView before loading content
                   let jsSetup = """
                   function setupWKWebViewJavascriptBridge(callback) {
                       if (window.WKWebViewJavascriptBridge) { return callback(WKWebViewJavascriptBridge); }
@@ -102,22 +80,29 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   if #available(iOS 16.4, *) {
-                      webView.isInspectable = false 
+                  // This is FALSE by default in Release builds, but explicitly setting it is safer
+                  webView.isInspectable = false 
                   }
                   UNUserNotificationCenter.current().delegate = self
+                  // Instantiate the bridge after the WebView is loaded
                   self.bridge = WKWebViewJavascriptBridge(webView: webView)
 
+                  // Register Native Handler for JS to call
                   self.bridge?.register(handlerName: "testiOSCallback") { (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       callback?("Response from testiOSCallback")
                   }
 
+                  // Register Native Handler for JS to call
                   self.bridge?.register(handlerName: "showNotification") { [weak self] (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       
+                      // Switch to the main thread to present the UI safely
                       DispatchQueue.main.async {
+                          // Guard against self being nil
                           guard let strongSelf = self else { return }
                           
+                          // Ensure we aren't already presenting something (prevents "balanced transitions" crash)
                           if strongSelf.presentedViewController != nil {
                               print("An alert is already being presented.")
                               return
@@ -134,6 +119,7 @@ jobs:
                           
                           alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
                           
+                          // Present the alert safely
                           strongSelf.present(alert, animated: true, completion: nil)
                       }
                       
@@ -184,7 +170,7 @@ jobs:
                         kSecAttrAccount as String: key,
                         kSecValueData as String: value.data(using: .utf8)!
                     ]
-                    SecItemDelete(query as CFDictionary)
+                    SecItemDelete(query as CFDictionary) // Clear existing
                     let status = SecItemAdd(query as CFDictionary, nil)
                     callback?(status == errSecSuccess ? "Success" : "Error")
                 }
@@ -205,8 +191,9 @@ jobs:
 
                   
               self.bridge?.register(handlerName: "toggleFlashlight") { (parameters, callback) in
+                  // 1. Try to get the hardware
                   guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else {
-                      callback?("Error: Hardware not available")
+                      callback?("Error: Hardware not available") // Resolve even if hardware fails
                       return 
                   }
                   
@@ -217,6 +204,7 @@ jobs:
                       device.torchMode = isOn ? .on : .off
                       device.unlockForConfiguration()
                       
+                      // 2. Crucial: Tell JS we are done!
                       callback?("Flashlight set to \(isOn)") 
                   } catch {
                       callback?("Error: Could not lock hardware")
@@ -227,25 +215,30 @@ jobs:
               self.bridge?.register(handlerName: "showLocalPush") { (parameters, callback) in
                   let center = UNUserNotificationCenter.current()
                   
+                  // 1. Request Permission first
                   center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
                       if granted {
                           let data = parameters as? [String: Any]
                           let title = data?["title"] as? String ?? "New Message"
                           let body = data?["body"] as? String ?? "You have a new notification."
                           
+                          // 2. Create Content
                           let content = UNMutableNotificationContent()
                           content.title = title
                           content.body = body
                           content.sound = .default
                           
+                          // 3. Create Trigger (Show after 1 second)
                           let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
                           
+                          // 4. Create Request
                           let request = UNNotificationRequest(
                               identifier: UUID().uuidString, 
                               content: content, 
                               trigger: trigger
                           )
                           
+                          // 5. Schedule
                           center.add(request) { (error) in
                               if let error = error {
                                   callback?("Error: \(error.localizedDescription)")
@@ -268,6 +261,7 @@ jobs:
                       if UIApplication.shared.canOpenURL(url) {
                           UIApplication.shared.open(url, options: [:], completionHandler: nil)
                       } else {
+                          // Handle error if app is not installed (e.g., show an alert or handle fallback)
                           print("App not installed or invalid URL")
                       }
                   }
@@ -310,21 +304,25 @@ jobs:
               }
 
 
-              func isUserPremium() -> Bool {
+              // Helper to check status
+                func isUserPremium() -> Bool {
                     return UserDefaults.standard.bool(forKey: "isPremiumUser")
                 }
                 
+                // 1. Function to 'unlock' (simulating a purchase)
                 self.bridge?.register(handlerName: "unlockPremium") { (_, callback) in
                     UserDefaults.standard.set(true, forKey: "isPremiumUser")
                     callback?("Success: Premium Unlocked")
                 }
                 
+                // 2. The Restricted Function
                 self.bridge?.register(handlerName: "premiumFeature") { [weak self] (parameters, callback) in
-                    guard self?.isUserPremium() == true else {
+                    guard isUserPremium() else {
                         callback?("Error: This is a paid feature. Please upgrade.")
                         return
                     }
                     
+                    // If they ARE premium, run the code
                     DispatchQueue.main.async {
                         let alert = UIAlertController(title: "Premium Access", message: "Executing paid function...", preferredStyle: .alert)
                         alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -335,22 +333,28 @@ jobs:
 
 
                 self.bridge?.register(handlerName: "premiumFeature2") { [weak self] (parameters, callback) in
+                    // 1. Extract User ID from the JS call
                     guard let data = parameters as? [String: Any],
                           let userId = data["userId"] as? String else {
                         callback?("Error: Missing User ID")
                         return
                     }
                 
+                    // 2. Define your Server URL
                     let url = URL(string: "https://your-api.com/check-subscription?uid=\(userId)")!
                     
+                    // 3. Perform a Native Network Request
                     let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
                         if let data = data, let responseString = String(data: data, encoding: .utf8) {
                             
+                            // 4. Check if Server returned "Yes" (or 1, or a valid token)
                             if responseString.contains("Yes") {
                                 DispatchQueue.main.async {
+                                    // --- PROTECTED NATIVE LOGIC START ---
                                     let alert = UIAlertController(title: "Verified", message: "Premium access granted!", preferredStyle: .alert)
                                     alert.addAction(UIAlertAction(title: "OK", style: .default))
                                     self?.present(alert, animated: true)
+                                    // --- PROTECTED NATIVE LOGIC END ---
                                     
                                     callback?("Access Granted")
                                 }
@@ -370,14 +374,17 @@ jobs:
               }
 
               func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+                  // Call JS Handler from Native once page finishes loading
                   self.bridge?.call(handlerName: "testJavascriptHandler", data: ["foo": "before ready"], callback: { response in
                       print("JS responded: \(String(describing: response))")
                   })
 
+                  // Visual confirmation
                   webView.evaluateJavaScript("alert('Bridge Initialized');")
                   webView.evaluateJavaScript("window._SETTINGS.APPTYPE = 'ios';")
               }
 
+              // Handle JavaScript Alerts (alert, confirm, prompt)
               func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
                   let alert = UIAlertController(title: "JS Alert", message: message, preferredStyle: .alert)
                   alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
@@ -387,10 +394,10 @@ jobs:
               func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
                   let confirmAlert = UIAlertController(title: "JS Confirm", message: message, preferredStyle: .alert)
                   confirmAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                      completionHandler(false)
+                      completionHandler(false) // User pressed Cancel
                   })
                   confirmAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
-                      completionHandler(true)
+                      completionHandler(true) // User pressed OK
                   })
                   present(confirmAlert, animated: true)
               }
@@ -398,16 +405,17 @@ jobs:
               func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
                   let promptAlert = UIAlertController(title: "JS Prompt", message: prompt, preferredStyle: .alert)
                   
+                  // Add a text field for the user to input
                   promptAlert.addTextField { textField in
                       textField.text = defaultText
                   }
           
                   promptAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                      completionHandler(nil)
+                      completionHandler(nil) // User pressed Cancel
                   })
                   promptAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
                       let text = promptAlert.textFields?.first?.text
-                      completionHandler(text)
+                      completionHandler(text) // User entered some text
                   })
                   
                   present(promptAlert, animated: true)
@@ -442,15 +450,6 @@ jobs:
                   <key>NSAllowsArbitraryLoads</key>
                   <true/>
               </dict>
-              <key>UIBackgroundModes</key>
-              <array>
-                  <string>fetch</string>
-                  <string>processing</string>
-              </array>
-              <key>BGTaskSchedulerPermittedIdentifiers</key>
-              <array>
-                  <string>com.example.webkitapp.refresh</string>
-              </array>
           </dict>
           </plist>
           EOF
@@ -462,8 +461,10 @@ jobs:
           require 'xcodeproj'
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
           
+          # Create app target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
           
+          # Add files to project and target membership
           app_delegate = project.new_file('AppDelegate.swift')
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
@@ -476,6 +477,7 @@ jobs:
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
           
+          # Ensure a shared scheme is created for CI visibility
           project.recreate_user_schemes
           project.save
           "
