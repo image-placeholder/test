@@ -1,4 +1,4 @@
-name: Build WebKit WebView iOS IPA 
+name: Build WebKit WebView iOS IPA
 
 on:
   push:
@@ -29,24 +29,22 @@ jobs:
           import UserNotifications // Added for notifications
           import BackgroundTasks
 
-          
           @main
           class AppDelegate: UIResponder, UIApplicationDelegate {
               var window: UIWindow?
               var mainViewController: ViewController?
-          
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
                   let vc = ViewController()
-                  self.mainViewController = vc
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
-          
+                            
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
                   }
                   return true
               }
+
           
               func handleAppRefresh(task: BGAppRefreshTask) {
                   let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
@@ -58,10 +56,8 @@ jobs:
                           task.setTaskCompleted(success: true)
                       }
                   }
-              }
+
           }
-
-
 
           class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate {
               var webView: WKWebView!
@@ -157,21 +153,6 @@ jobs:
                           generator.impactOccurred()
                       }
                   }
-
-
-                self.bridge?.register(handlerName: "scheduleBackgroundSync") { (parameters, callback) in
-                    let hours = (parameters as? [String: Any])?["hours"] as? Double ?? 2.0
-                    
-                    let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
-                    request.earliestBeginDate = Date(timeIntervalSinceNow: hours * 3600)
-                    
-                    do {
-                        try BGTaskScheduler.shared.submit(request)
-                        callback?("Successfully scheduled for \(hours) hours from now")
-                    } catch {
-                        callback?("Error: \(error.localizedDescription)")
-                    }
-                }
 
                 self.bridge?.register(handlerName: "getDeviceInfo") { (_, callback) in
                     UIDevice.current.isBatteryMonitoringEnabled = true
