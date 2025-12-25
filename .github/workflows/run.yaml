@@ -21,7 +21,7 @@ jobs:
       - name: Generate Source Files
         run: |
           # 1. Create AppDelegate.swift with Full Bridge Logic
-          cat <<EOF > AppDelegate.swift
+          cat <<'SWIFTEOF' > AppDelegate.swift
           import UIKit
           import WebKit
           import WKWebViewJavascriptBridge
@@ -534,7 +534,7 @@ jobs:
                   present(promptAlert, animated: true)
               }
           }
-          EOF
+          SWIFTEOF
 
           # 2. Create Info.plist for the project
           cat <<EOF > Info.plist
