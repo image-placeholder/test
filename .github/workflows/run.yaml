@@ -46,8 +46,8 @@ jobs:
                   }
               
                   // Check if the app was opened via a custom URL scheme (e.g., mywebkitapp://share)
-                  if let url = launchOptions?[.url] as? URL {
-                      // Check if the URL is from the share extension
+                  if let url = url {
+                      // Check if the URL is from our share extension
                       if url.scheme == "mywebkitapp" && url.host == "share" {
                           let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                           let noteText = components?.queryItems?.first(where: { $0.name == "text" })?.value
@@ -56,8 +56,10 @@ jobs:
                           DispatchQueue.main.async {
                               self.mainViewController?.bridge?.callHandler("onNoteShared", data: ["text": noteText ?? ""])
                           }
+                          return true
                       }
                   }
+
               
                   return true
               }
