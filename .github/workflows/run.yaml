@@ -55,23 +55,25 @@ jobs:
               func application(_ app: UIApplication,
                                open url: URL,
                                options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
-              
+                  
+                  // Handle opening the app via a custom URL scheme
                   if url.scheme == "mywebkitapp", url.host == "share" {
                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                       let noteText = components?.queryItems?.first(where: { $0.name == "text" })?.value ?? ""
-              
+                      
                       // Pass the note text to your JS Bridge
-                      if let rootVC = window?.rootViewController as? ViewController {
+                      if let rootVC = mainViewController {
                           DispatchQueue.main.async {
                               rootVC.bridge?.callHandler("onNoteShared", data: ["text": noteText])
                           }
                       }
-              
+                      
                       return true
                   }
-              
+                  
                   return false
               }
+
 
 
 
