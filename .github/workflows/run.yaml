@@ -628,7 +628,7 @@ jobs:
               'NSExtensionPointIdentifier' => 'com.apple.share-services'
             }
           }
-
+      
           # Use Nokogiri to convert the hash to XML format
           builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
             xml.plist(version: '1.0') {
@@ -651,9 +651,16 @@ jobs:
             }
           end
       
-          # Save the generated XML to the Info.plist file for the extension
+          # Define the full path to the Info.plist file
           extension_plist_file = "#{extension_dir}/Info.plist"
-          File.write(extension_plist_file, builder.to_xml(indent: 2))
+      
+          # Ensure the path is valid
+          unless extension_plist_file.nil? || extension_plist_file.empty?
+            # Save the generated XML to the Info.plist file for the extension
+            File.write(extension_plist_file, builder.to_xml(indent: 2))
+          else
+            puts 'Error: Info.plist file path is invalid.'
+          end
       
           # Add the Info.plist to the extension target
           extension_target.build_configurations.each do |config|
@@ -668,6 +675,7 @@ jobs:
           project.recreate_user_schemes
           project.save
           "
+
 
 
       - name: Create and Install Pods
