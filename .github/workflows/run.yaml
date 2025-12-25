@@ -55,6 +55,7 @@ jobs:
               // Handle URL scheme opens (when share extension opens the app)
               func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
                   if url.scheme == "webkitapp" {
+                      print("🔗 App opened via URL scheme: \(url)")
                       // Give WebView time to load, then check for shared data
                       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                           self.checkForSharedData()
@@ -62,6 +63,12 @@ jobs:
                       return true
                   }
                   return false
+              }
+              
+              // Also handle when app becomes active (covers more cases)
+              func applicationDidBecomeActive(_ application: UIApplication) {
+                  // Check for shared data whenever app becomes active
+                  checkForSharedData()
               }
 
               func checkForSharedData() {
@@ -598,14 +605,13 @@ jobs:
               
               func openMainAppAndClose() {
                   DispatchQueue.main.async { [weak self] in
-                      // Try to open the main app
-                      if let url = URL(string: "webkitapp://shared") {
-                          self?.openURL(url)
-                      }
+                      // Open the main app with URL scheme
+                      self?.openURL(URL(string: "webkitapp://shared")!)
                       
-                      // Close the extension after a brief delay
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                          self?.closeExtension()
+                      // Close the extension immediately
+                      self?.extensionContext?.completeRequest(returningItems: nil) { _ in
+                          // Extension is now closed and main app should be visible
+                          print("✅ Share extension closed, main app should be visible")
                       }
                   }
               }
@@ -615,6 +621,7 @@ jobs:
               }
               
               @objc func openURL(_ url: URL) {
+                  // Method 1: Try to open via selector
                   var responder: UIResponder? = self
                   while responder != nil {
                       if let application = responder as? UIApplication {
@@ -623,6 +630,11 @@ jobs:
                       }
                       responder = responder?.next
                   }
+                  
+                  // Method 2: Use extension context to open URL
+                  self.extensionContext?.open(url, completionHandler: { success in
+                      print(success ? "✅ Opened main app" : "❌ Failed to open main app")
+                  })
               }
           }
           EOF
