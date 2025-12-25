@@ -128,60 +128,28 @@ jobs:
 
               // MARK: - Handle Shared Content
               func handleSharedContent(text: String) {
-                  // Show native alert first for debugging
-                  let alert = UIAlertController(
-                      title: "Shared Text Received",
-                      message: String(text.prefix(100)),
-                      preferredStyle: .alert
-                  )
-                  alert.addAction(UIAlertAction(title: "OK", style: .default))
-                  self.present(alert, animated: true)
+                  // Encode the text for URL
+                  let encodedText = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                   
-                  // Try to send to bridge multiple times with delays
-                  sendToWebView(text: text, attempt: 0)
-              }
-              
-              func handleSharedContent(url: String) {
-                  // Show native alert first for debugging
-                  let alert = UIAlertController(
-                      title: "Shared URL Received",
-                      message: url,
-                      preferredStyle: .alert
-                  )
-                  alert.addAction(UIAlertAction(title: "OK", style: .default))
-                  self.present(alert, animated: true)
+                  // Reload the WebView with the shared text as a query parameter
+                  let baseURL = "https://snippets.marketingpipeliners.com"
+                  let urlString = "\(baseURL)?sharedText=\(encodedText)"
                   
-                  // Try to send to bridge multiple times with delays
-                  sendToWebView(url: url, attempt: 0)
-              }
-              
-              func sendToWebView(text: String, attempt: Int) {
-                  guard attempt < 10 else { return } // Try 10 times over 5 seconds
-                  
-                  if let bridge = bridge {
-                      bridge.call(handlerName: "onSharedText", data: ["text": text]) { response in
-                          print("✅ Shared text sent to WebView: \(String(describing: response))")
-                      }
-                  } else {
-                      // Bridge not ready, try again
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                          self.sendToWebView(text: text, attempt: attempt + 1)
-                      }
+                  if let url = URL(string: urlString) {
+                      webView.load(URLRequest(url: url))
                   }
               }
               
-              func sendToWebView(url: String, attempt: Int) {
-                  guard attempt < 10 else { return }
+              func handleSharedContent(url: String) {
+                  // Encode the URL
+                  let encodedURL = url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                   
-                  if let bridge = bridge {
-                      bridge.call(handlerName: "onSharedURL", data: ["url": url]) { response in
-                          print("✅ Shared URL sent to WebView: \(String(describing: response))")
-                      }
-                  } else {
-                      // Bridge not ready, try again
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                          self.sendToWebView(url: url, attempt: attempt + 1)
-                      }
+                  // Reload the WebView with the shared URL as a query parameter
+                  let baseURL = "https://snippets.marketingpipeliners.com"
+                  let urlString = "\(baseURL)?sharedURL=\(encodedURL)"
+                  
+                  if let targetURL = URL(string: urlString) {
+                      webView.load(URLRequest(url: targetURL))
                   }
               }
 
