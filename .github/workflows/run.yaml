@@ -437,78 +437,97 @@ jobs:
           cat <<EOF > ShareViewController.swift
           import UIKit
           import Social
-          import MobileCoreServices
-          import UniformTypeIdentifiers
 
           class ShareViewController: UIViewController {
               
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  handleSharedContent()
+                  
+                  // Add a small delay to show the UI briefly
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                      self.handleSharedContent()
+                  }
               }
               
               private func handleSharedContent() {
-                  guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
-                        let itemProvider = extensionItem.attachments?.first else {
+                  guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem else {
                       self.closeExtension()
                       return
                   }
                   
-                  // Handle plain text (from Notes, Safari, etc.)
-                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                      itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, error) in
-                          if let text = item as? String {
-                              self.saveToSharedContainer(text: text, url: nil)
+                  var sharedText = ""
+                  var sharedURL = ""
+                  
+                  let group = DispatchGroup()
+                  
+                  // Process all attachments
+                  for attachment in extensionItem.attachments ?? [] {
+                      // Check for plain text
+                      if attachment.hasItemConformingToTypeIdentifier("public.plain-text") {
+                          group.enter()
+                          attachment.loadItem(forTypeIdentifier: "public.plain-text", options: nil) { (item, error) in
+                              if let text = item as? String {
+                                  sharedText = text
+                              } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
+                                  sharedText = text
+                              }
+                              group.leave()
                           }
-                          self.openMainApp()
+                      }
+                      
+                      // Check for URL
+                      if attachment.hasItemConformingToTypeIdentifier("public.url") {
+                          group.enter()
+                          attachment.loadItem(forTypeIdentifier: "public.url", options: nil) { (item, error) in
+                              if let url = item as? URL {
+                                  sharedURL = url.absoluteString
+                              }
+                              group.leave()
+                          }
                       }
                   }
-                  // Handle URLs (from Safari, etc.)
-                  else if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                      itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, error) in
-                          if let url = item as? URL {
-                              self.saveToSharedContainer(text: nil, url: url.absoluteString)
-                          }
-                          self.openMainApp()
-                      }
-                  }
-                  // Fallback
-                  else {
-                      self.closeExtension()
+                  
+                  // Wait for all items to load
+                  group.notify(queue: .main) {
+                      self.saveToSharedContainer(text: sharedText, url: sharedURL)
+                      self.openMainApp()
                   }
               }
               
-              private func saveToSharedContainer(text: String?, url: String?) {
+              private func saveToSharedContainer(text: String, url: String) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
-                      if let text = text {
+                      if !text.isEmpty {
                           sharedDefaults.set(text, forKey: "sharedText")
                       }
-                      if let url = url {
+                      if !url.isEmpty {
                           sharedDefaults.set(url, forKey: "sharedURL")
                       }
+                      sharedDefaults.set(Date().timeIntervalSince1970, forKey: "sharedTimestamp")
                       sharedDefaults.synchronize()
                   }
               }
               
               private func openMainApp() {
-                  // Open the main app with a custom URL scheme
                   let url = URL(string: "webkitapp://shared")!
-                  var responder: UIResponder? = self as UIResponder
-                  let selector = #selector(openURL(_:))
                   
+                  // Try to open using the extension context
+                  _ = self.openURL(url)
+                  
+                  // Close the extension
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                      self.closeExtension()
+                  }
+              }
+              
+              @objc private func openURL(_ url: URL) -> Bool {
+                  var responder: UIResponder? = self
                   while responder != nil {
-                      if responder!.responds(to: selector) && responder != self {
-                          responder!.perform(selector, with: url)
-                          break
+                      if let application = responder as? UIApplication {
+                          return application.perform(#selector(openURL(_:)), with: url) != nil
                       }
                       responder = responder?.next
                   }
-                  
-                  self.closeExtension()
-              }
-              
-              @objc private func openURL(_ url: URL) {
-                  // This will be called by the responder chain
+                  return false
               }
               
               private func closeExtension() {
@@ -575,15 +594,15 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleDisplayName</key>
-              <string>Save to WebKitApp</string>
+              <string>WebKitApp</string>
               <key>CFBundleExecutable</key>
-              <string>ShareExtension</string>
+              <string>\$(EXECUTABLE_NAME)</string>
               <key>CFBundleIdentifier</key>
-              <string>com.example.webkitapp.ShareExtension</string>
+              <string>\$(PRODUCT_BUNDLE_IDENTIFIER)</string>
               <key>CFBundleName</key>
-              <string>ShareExtension</string>
+              <string>\$(PRODUCT_NAME)</string>
               <key>CFBundlePackageType</key>
-              <string>XPC!</string>
+              <string>\$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
               <key>CFBundleShortVersionString</key>
               <string>1.0</string>
               <key>CFBundleVersion</key>
@@ -593,20 +612,59 @@ jobs:
                   <key>NSExtensionAttributes</key>
                   <dict>
                       <key>NSExtensionActivationRule</key>
-                      <dict>
-                          <key>NSExtensionActivationSupportsText</key>
-                          <true/>
-                          <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-                          <integer>1</integer>
-                      </dict>
+                      <string>TRUEPREDICATE</string>
                   </dict>
+                  <key>NSExtensionMainStoryboard</key>
+                  <string>MainInterface</string>
                   <key>NSExtensionPointIdentifier</key>
                   <string>com.apple.share-services</string>
-                  <key>NSExtensionPrincipalClass</key>
-                  <string>ShareViewController</string>
               </dict>
           </dict>
           </plist>
+          EOF
+          
+          # 5. Create MainInterface.storyboard for Share Extension
+          cat <<EOF > MainInterface.storyboard
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="j1y-V4-xli">
+              <device id="retina6_12" orientation="portrait" appearance="light"/>
+              <dependencies>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
+                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="ceB-am-kn3">
+                      <objects>
+                          <viewController id="j1y-V4-xli" customClass="ShareViewController" customModule="ShareExtension" customModuleProvider="target" sceneMemberID="viewController">
+                              <view key="view" opaque="NO" contentMode="scaleToFill" id="wbc-yd-nQP">
+                                  <rect key="frame" x="0.0" y="0.0" width="393" height="300"/>
+                                  <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                  <subviews>
+                                      <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Saving to WebKitApp..." textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="NdF-c7-GXg">
+                                          <rect key="frame" x="20" y="139.66666666666666" width="353" height="20.333333333333343"/>
+                                          <fontDescription key="fontDescription" type="system" pointSize="17"/>
+                                          <nil key="textColor"/>
+                                          <nil key="highlightedColor"/>
+                                      </label>
+                                  </subviews>
+                                  <color key="backgroundColor" white="0.0" alpha="0.0" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                  <constraints>
+                                      <constraint firstItem="NdF-c7-GXg" firstAttribute="centerY" secondItem="wbc-yd-nQP" secondAttribute="centerY" id="7MZ-FJ-6bG"/>
+                                      <constraint firstItem="NdF-c7-GXg" firstAttribute="leading" secondItem="kDf-ej-6b7" secondAttribute="leading" constant="20" id="Q8r-Yz-vtC"/>
+                                      <constraint firstItem="kDf-ej-6b7" firstAttribute="trailing" secondItem="NdF-c7-GXg" secondAttribute="trailing" constant="20" id="sfe-3s-1fN"/>
+                                  </constraints>
+                                  <viewLayoutGuide key="safeArea" id="kDf-ej-6b7"/>
+                              </view>
+                              <freeformSimulatedSizeMetrics key="simulatedDestinationMetrics"/>
+                              <size key="freeformSize" width="393" height="300"/>
+                          </viewController>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="CEy-Cv-SGf" userLabel="First Responder" sceneMemberID="firstResponder"/>
+                      </objects>
+                      <point key="canvasLocation" x="139" y="153"/>
+                  </scene>
+              </scenes>
+          </document>
           EOF
 
       - name: Create Xcode Project with Share Extension
