@@ -46,6 +46,27 @@ jobs:
               }
 
 
+
+              func application(_ app: UIApplication,
+                               open url: URL,
+                               options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+                  
+                  if url.scheme == "mywebkitapp", url.host == "share" {
+                      let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                      let noteText = components?.queryItems?.first(where: { $0.name == "text" })?.value ?? ""
+                      
+                      if let rootVC = mainViewController {
+                          DispatchQueue.main.async {
+                              rootVC.bridge?.callHandler("onNoteShared", data: ["text": noteText])
+                          }
+                      }
+                      
+                      return true
+                  }
+                  
+                  return false
+              }
+
               func handleAppRefresh(task: BGAppRefreshTask) {
                   let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
                   request.earliestBeginDate = Date(timeIntervalSinceNow: 3600)
@@ -63,6 +84,9 @@ jobs:
                   request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60) // 2 hours
                   try? BGTaskScheduler.shared.submit(request)
               }
+
+
+
               
           }
 
@@ -548,6 +572,15 @@ jobs:
               <array>
                   <string>com.example.webkitapp.refresh</string>
               </array>
+              <key>CFBundleURLTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleURLSchemes</key>
+                      <array>
+                          <string>mywebkitapp</string>
+                      </array>
+                  </dict>
+              </array>
           </dict>
           </plist>
           EOF
@@ -555,18 +588,19 @@ jobs:
       - name: Create Xcode Project
         run: |
           gem install xcodeproj
+          gem install nokogiri
           ruby -e "
           require 'xcodeproj'
+          require 'nokogiri'
+          require 'fileutils'
+      
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
-          
-          # Create app target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
-          
-          # Add files to project and target membership
+      
           app_delegate = project.new_file('AppDelegate.swift')
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
-
+      
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
@@ -574,11 +608,83 @@ jobs:
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
-          
-          # Ensure a shared scheme is created for CI visibility
+      
+          extension_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
+          extension_target.product_type = 'com.apple.product-type.app-extension'
+      
+          extension_dir = 'ShareExtension'
+          FileUtils.mkdir_p(extension_dir) unless File.exist?(extension_dir)
+      
+          extension_plist = {
+            'CFBundleDisplayName' => 'Send to WebKit',
+            'NSExtension' => {
+              'NSExtensionAttributes' => {
+                'NSExtensionActivationRule' => 'TRUEPREDICATE'
+              },
+              'NSExtensionMainStoryboard' => 'MainInterface',
+              'NSExtensionPointIdentifier' => 'com.apple.share-services'
+            }
+          }
+      
+          builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
+            xml.plist(version: '1.0') {
+              xml.dict {
+                extension_plist.each do |key, value|
+                  if value.is_a? Hash
+                    xml.key key
+                    xml.dict {
+                      value.each do |sub_key, sub_value|
+                        xml.key sub_key
+                        xml.string sub_value
+                      end
+                    }
+                  else
+                    xml.key key
+                    xml.string value
+                  end
+                end
+              }
+            }
+          end
+      
+          extension_plist_file = \"#{extension_dir}/Info.plist\"
+      
+          unless extension_plist_file.nil? || extension_plist_file.empty?
+            File.write(extension_plist_file, builder.to_xml(indent: 2))
+          else
+            puts 'Error: Info.plist file path is invalid.'
+          end
+      
+          extension_target.build_configurations.each do |config|
+            config.build_settings['INFOPLIST_FILE'] = extension_plist_file
+            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.shareextension'
+            config.build_settings['SWIFT_VERSION'] = '5.0'
+            config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+          end
+      
           project.recreate_user_schemes
           project.save
           "
+
+      - name: Create and Install Pods
+        run: |
+          cat <<'PODEOF' > Podfile
+          platform :ios, '15.0'
+          use_frameworks!
+          target 'WebKitApp' do
+            pod 'WKWebViewJavascriptBridge', '~> 1.2.0'
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+              end
+            end
+          end
+          PODEOF
+          pod install
 
       - name: Create and Install Pods
         run: |
