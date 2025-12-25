@@ -583,8 +583,10 @@ jobs:
         run: |
           # Create Xcode Project and add the app target and share extension
           gem install xcodeproj
+          gem install nokogiri
           ruby -e "
           require 'xcodeproj'
+          require 'nokogiri'
           
           # Create a new Xcode project
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
@@ -610,22 +612,46 @@ jobs:
           extension_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
           extension_target.product_type = 'com.apple.product-type.app-extension'
           
-          # Configure Extension's Info.plist
+
+          
+          # Generate XML content from a hash
           extension_plist = {
             'CFBundleDisplayName' => 'Send to WebKit',
             'NSExtension' => {
               'NSExtensionAttributes' => {
-                'NSExtensionActivationRule' => 'TRUEPREDICATE' # Accept all content for the extension
+                'NSExtensionActivationRule' => 'TRUEPREDICATE' # Accept everything
               },
               'NSExtensionMainStoryboard' => 'MainInterface',
               'NSExtensionPointIdentifier' => 'com.apple.share-services'
             }
           }
           
-          # Save the configuration to the share extension's Info.plist
+          # Use Nokogiri to convert the hash to XML format
+          builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
+            xml.plist(version: '1.0') {
+              xml.dict {
+                extension_plist.each do |key, value|
+                  if value.is_a? Hash
+                    xml.key key
+                    xml.dict {
+                      value.each do |sub_key, sub_value|
+                        xml.key sub_key
+                        xml.string sub_value
+                      end
+                    }
+                  else
+                    xml.key key
+                    xml.string value
+                  end
+                end
+              }
+            }
+          end
+          
+          # Save the generated XML to a file
           extension_plist_file = 'ShareExtension/Info.plist'
-          extension_plist_content = extension_plist.to_xml(root: 'plist', indent: 2)
-          File.write(extension_plist_file, extension_plist_content)
+          File.write(extension_plist_file, builder.to_xml(indent: 2))
+
           
           # Add the Info.plist to the extension target
           extension_target.build_configurations.each do |config|
