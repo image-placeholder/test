@@ -57,6 +57,12 @@ jobs:
                       }
                   }
               }
+
+              func scheduleAppRefresh() {
+                  let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
+                  request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60) // 2 hours
+                  try? BGTaskScheduler.shared.submit(request)
+              }
               
           }
 
@@ -140,6 +146,21 @@ jobs:
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       callback?("Response from testiOSCallback")
                   }
+
+
+                self.bridge?.register(handlerName: "scheduleBackgroundSync") { (parameters, callback) in
+                    let hours = (parameters as? [String: Any])?["hours"] as? Double ?? 2.0
+                    
+                    let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
+                    request.earliestBeginDate = Date(timeIntervalSinceNow: hours * 3600)
+                    
+                    do {
+                        try BGTaskScheduler.shared.submit(request)
+                        callback?("Successfully scheduled for \(hours) hours from now")
+                    } catch {
+                        callback?("Error: \(error.localizedDescription)")
+                    }
+                }
 
                   // Register Native Handler for JS to call
                   self.bridge?.register(handlerName: "showNotification") { [weak self] (parameters, callback) in
