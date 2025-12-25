@@ -632,6 +632,67 @@ jobs:
           project.save
           "
 
+      - name: Create Share Extension Source
+        run: |
+          cat <<EOF > ShareViewController.swift
+          import UIKit
+          import Social
+          import MobileCoreServices
+
+          class ShareViewController: SLComposeServiceViewController {
+              override func isContentValid() -> Bool { return true }
+
+              override func didSelectPost() {
+                  if let item = extensionContext?.inputItems.first as? NSExtensionItem,
+                     let itemProvider = item.attachments?.first {
+                      if itemProvider.hasItemConformingToTypeIdentifier(kUTTypePlainText as String) {
+                          itemProvider.loadItem(forTypeIdentifier: kUTTypePlainText as String, options: nil) { (text, error) in
+                              if let note = text as? String {
+                                  // This triggers your app's openURL in AppDelegate
+                                  let urlText = "mywebkitapp://share?text=\(note.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+                                  if let url = URL(string: urlText) {
+                                      var responder: UIResponder? = self
+                                      while responder != nil {
+                                          if let application = responder as? UIApplication {
+                                              application.open(url, options: [:], completionHandler: nil)
+                                              break
+                                          }
+                                          responder = responder?.next
+                                      }
+                                  }
+                              }
+                              self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+
+      - name: Create Share Info Plist
+        run: |
+          cat <<EOF > Share-Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>NSExtension</key>
+              <dict>
+                  <key>NSExtensionAttributes</key>
+                  <dict>
+                      <key>NSExtensionActivationRule</key>
+                      <string>SUBQUERY (extensionItems, \$extensionItem, ANY \$extensionItem.attachments, \$attachment, ANY \$attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count > 0</string>
+                  </dict>
+                  <key>NSExtensionPointIdentifier</key>
+                  <string>com.apple.share-services</string>
+                  <key>NSExtensionPrincipalClass</key>
+                  <string>ShareExtension.ShareViewController</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
       - name: Create and Install Pods
         run: |
           cat <<'PODEOF' > Podfile
