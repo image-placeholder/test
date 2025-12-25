@@ -39,11 +39,29 @@ jobs:
                   let vc = ViewController()
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
+              
+                  // Register background task
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
-                  }     
+                  }
+              
+                  // Check if the app was opened via a custom URL scheme (e.g., mywebkitapp://share)
+                  if let url = launchOptions?[.url] as? URL {
+                      // Check if the URL is from the share extension
+                      if url.scheme == "mywebkitapp" && url.host == "share" {
+                          let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                          let noteText = components?.queryItems?.first(where: { $0.name == "text" })?.value
+                          
+                          // Pass the note text to your JS Bridge
+                          DispatchQueue.main.async {
+                              self.mainViewController?.bridge?.callHandler("onNoteShared", data: ["text": noteText ?? ""])
+                          }
+                      }
+                  }
+              
                   return true
               }
+
 
 
               func handleAppRefresh(task: BGAppRefreshTask) {
@@ -548,29 +566,72 @@ jobs:
               <array>
                   <string>com.example.webkitapp.refresh</string>
               </array>
+              <key>CFBundleURLTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleURLSchemes</key>
+                      <array>
+                          <string>mywebkitapp</string>
+                      </array>
+                  </dict>
+              </array>
           </dict>
           </plist>
           EOF
 
       - name: Create Xcode Project
         run: |
+          # Create Xcode Project and add the app target and share extension
           gem install xcodeproj
           ruby -e "
           require 'xcodeproj'
+          
+          # Create a new Xcode project
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
           
           # Create app target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
           
-          # Add files to project and target membership
+          # Add app files (AppDelegate.swift, Info.plist)
           app_delegate = project.new_file('AppDelegate.swift')
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
-
+          
+          # Set build configurations for the app target
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
             config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp'
+            config.build_settings['SWIFT_VERSION'] = '5.0'
+            config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+          end
+          
+          # Create Share Extension target
+          extension_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
+          extension_target.product_type = 'com.apple.product-type.app-extension'
+          
+          # Configure Extension's Info.plist
+          extension_plist = {
+            'CFBundleDisplayName' => 'Send to WebKit',
+            'NSExtension' => {
+              'NSExtensionAttributes' => {
+                'NSExtensionActivationRule' => 'TRUEPREDICATE' # Accept all content for the extension
+              },
+              'NSExtensionMainStoryboard' => 'MainInterface',
+              'NSExtensionPointIdentifier' => 'com.apple.share-services'
+            }
+          }
+          
+          # Save the configuration to the share extension's Info.plist
+          extension_plist_file = 'ShareExtension/Info.plist'
+          extension_plist_content = extension_plist.to_xml(root: 'plist', indent: 2)
+          File.write(extension_plist_file, extension_plist_content)
+          
+          # Add the Info.plist to the extension target
+          extension_target.build_configurations.each do |config|
+            config.build_settings['INFOPLIST_FILE'] = extension_plist_file
+            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.shareextension'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
