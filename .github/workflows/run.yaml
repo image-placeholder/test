@@ -532,57 +532,71 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   
+                  // Show a simple alert while processing
+                  view.backgroundColor = .systemBackground
+                  
                   // Process the shared content immediately
                   processSharedContent()
               }
               
               func processSharedContent() {
                   guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
-                        let attachments = extensionItem.attachments else {
-                      closeExtension()
+                        let attachments = extensionItem.attachments, !attachments.isEmpty else {
+                      print("❌ No attachments found")
+                      closeAndOpenApp()
                       return
                   }
                   
-                  // Try to find text or URL content
-                  for itemProvider in attachments {
-                      // Priority 1: Plain Text (works with Notes)
-                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                          itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (item, error) in
-                              if let text = item as? String {
-                                  self?.saveSharedData(text: text)
-                              } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
-                                  self?.saveSharedData(text: text)
-                              }
-                              self?.openMainAppAndClose()
+                  let itemProvider = attachments[0]
+                  
+                  // Priority 1: Plain Text (works with Notes)
+                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                      itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (item, error) in
+                          var textToSave: String?
+                          
+                          if let text = item as? String {
+                              textToSave = text
+                          } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
+                              textToSave = text
                           }
-                          return
-                      }
-                      
-                      // Priority 2: URL
-                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                          itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (item, error) in
-                              if let url = item as? URL {
-                                  self?.saveSharedData(url: url.absoluteString)
-                              }
-                              self?.openMainAppAndClose()
+                          
+                          if let text = textToSave {
+                              self?.saveSharedData(text: text)
+                              print("✅ Saved plain text: \(text.prefix(50))...")
                           }
-                          return
+                          
+                          self?.closeAndOpenApp()
                       }
-                      
-                      // Priority 3: Generic Text
-                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
-                          itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] (item, error) in
-                              if let text = item as? String {
-                                  self?.saveSharedData(text: text)
-                              }
-                              self?.openMainAppAndClose()
-                          }
-                          return
-                      }
+                      return
                   }
                   
-                  // If no compatible content found, just close
-                  closeExtension()
+                  // Priority 2: URL
+                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                      itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (item, error) in
+                          if let url = item as? URL {
+                              self?.saveSharedData(url: url.absoluteString)
+                              print("✅ Saved URL: \(url.absoluteString)")
+                          }
+                          self?.closeAndOpenApp()
+                      }
+                      return
+                  }
+                  
+                  // Priority 3: Generic Text
+                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+                      itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] (item, error) in
+                          if let text = item as? String {
+                              self?.saveSharedData(text: text)
+                              print("✅ Saved text: \(text.prefix(50))...")
+                          }
+                          self?.closeAndOpenApp()
+                      }
+                      return
+                  }
+                  
+                  // If no compatible content found
+                  print("❌ No compatible content type found")
+                  closeAndOpenApp()
               }
               
               func saveSharedData(text: String) {
@@ -590,7 +604,6 @@ jobs:
                       sharedDefaults.set(text, forKey: "SharedText")
                       sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
-                      print("✅ Saved shared text: \(text.prefix(50))...")
                   }
               }
               
@@ -599,42 +612,25 @@ jobs:
                       sharedDefaults.set(url, forKey: "SharedURL")
                       sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
-                      print("✅ Saved shared URL: \(url)")
                   }
               }
               
-              func openMainAppAndClose() {
+              func closeAndOpenApp() {
                   DispatchQueue.main.async { [weak self] in
-                      // Open the main app with URL scheme
-                      self?.openURL(URL(string: "webkitapp://shared")!)
+                      guard let self = self else { return }
                       
-                      // Close the extension immediately
-                      self?.extensionContext?.completeRequest(returningItems: nil) { _ in
-                          // Extension is now closed and main app should be visible
-                          print("✅ Share extension closed, main app should be visible")
-                      }
+                      let url = URL(string: "webkitapp://shared")!
+                      
+                      // Try to open the main app
+                      self.extensionContext?.open(url, completionHandler: { success in
+                          print(success ? "✅ Successfully opened main app" : "⚠️ Could not open main app")
+                          
+                          // Always close the extension, even if open fails
+                          self.extensionContext?.completeRequest(returningItems: nil, completionHandler: { _ in
+                              print("✅ Extension closed")
+                          })
+                      })
                   }
-              }
-              
-              func closeExtension() {
-                  self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-              }
-              
-              @objc func openURL(_ url: URL) {
-                  // Method 1: Try to open via selector
-                  var responder: UIResponder? = self
-                  while responder != nil {
-                      if let application = responder as? UIApplication {
-                          application.perform(#selector(openURL(_:)), with: url)
-                          return
-                      }
-                      responder = responder?.next
-                  }
-                  
-                  // Method 2: Use extension context to open URL
-                  self.extensionContext?.open(url, completionHandler: { success in
-                      print(success ? "✅ Opened main app" : "❌ Failed to open main app")
-                  })
               }
           }
           EOF
@@ -646,7 +642,7 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleDisplayName</key>
-              <string>Share to WebKitApp</string>
+              <string>Save to WebKitApp</string>
               <key>CFBundleExecutable</key>
               <string>ShareExtension</string>
               <key>CFBundleIdentifier</key>
@@ -664,12 +660,7 @@ jobs:
                   <key>NSExtensionAttributes</key>
                   <dict>
                       <key>NSExtensionActivationRule</key>
-                      <dict>
-                          <key>NSExtensionActivationSupportsText</key>
-                          <true/>
-                          <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-                          <integer>1</integer>
-                      </dict>
+                      <string>TRUEPREDICATE</string>
                   </dict>
                   <key>NSExtensionMainStoryboard</key>
                   <string>MainInterface</string>
