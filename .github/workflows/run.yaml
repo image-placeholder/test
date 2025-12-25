@@ -588,81 +588,46 @@ jobs:
       - name: Create Xcode Project
         run: |
           gem install xcodeproj
-          gem install nokogiri
           ruby -e "
           require 'xcodeproj'
-          require 'nokogiri'
-          require 'fileutils'
-      
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
+          
+          # 1. Create Main App Target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
-      
           app_delegate = project.new_file('AppDelegate.swift')
-          info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
-      
+
+          # 2. Create Share Extension Target
+          share_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
+          share_vc = project.new_file('ShareViewController.swift')
+          share_plist = project.new_file('Share-Info.plist')
+          share_target.add_file_references([share_vc])
+
+          # 3. Setup Build Settings for Main App
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
-            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
             config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
-      
-          extension_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
-          extension_target.product_type = 'com.apple.product-type.app-extension'
-      
-          extension_dir = 'ShareExtension'
-          FileUtils.mkdir_p(extension_dir) unless File.exist?(extension_dir)
-      
-          extension_plist = {
-            'CFBundleDisplayName' => 'Send to WebKit',
-            'NSExtension' => {
-              'NSExtensionAttributes' => {
-                'NSExtensionActivationRule' => 'TRUEPREDICATE'
-              },
-              'NSExtensionMainStoryboard' => 'MainInterface',
-              'NSExtensionPointIdentifier' => 'com.apple.share-services'
-            }
-          }
-      
-          builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
-            xml.plist(version: '1.0') {
-              xml.dict {
-                extension_plist.each do |key, value|
-                  if value.is_a? Hash
-                    xml.key key
-                    xml.dict {
-                      value.each do |sub_key, sub_value|
-                        xml.key sub_key
-                        xml.string sub_value
-                      end
-                    }
-                  else
-                    xml.key key
-                    xml.string value
-                  end
-                end
-              }
-            }
-          end
-      
-          extension_plist_file = \"#{extension_dir}/Info.plist\"
-      
-          unless extension_plist_file.nil? || extension_plist_file.empty?
-            File.write(extension_plist_file, builder.to_xml(indent: 2))
-          else
-            puts 'Error: Info.plist file path is invalid.'
-          end
-      
-          extension_target.build_configurations.each do |config|
-            config.build_settings['INFOPLIST_FILE'] = extension_plist_file
-            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
-            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.shareextension'
+
+          # 4. Setup Build Settings for Share Extension
+          share_target.build_configurations.each do |config|
+            config.build_settings['INFOPLIST_FILE'] = 'Share-Info.plist'
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.ShareExtension'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+            config.build_settings['SKIP_INSTALL'] = 'YES'
           end
-      
+
+          # 5. Add Extension as a dependency of the Main App
+          target.add_dependency(share_target)
+          
+          # Create copy files build phase to embed the extension in the app bundle
+          copy_phase = target.new_copy_files_build_phase('Embed App Extensions')
+          copy_phase.dst_subfolder_spec = '13' # 13 is the code for 'PlugIns' folder
+          copy_phase.add_file_reference(share_target.product_reference)
+
           project.recreate_user_schemes
           project.save
           "
