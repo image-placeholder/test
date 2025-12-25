@@ -128,14 +128,60 @@ jobs:
 
               // MARK: - Handle Shared Content
               func handleSharedContent(text: String) {
-                  bridge?.call(handlerName: "onSharedText", data: ["text": text]) { response in
-                      print("Shared text handled: \(String(describing: response))")
-                  }
+                  // Show native alert first for debugging
+                  let alert = UIAlertController(
+                      title: "Shared Text Received",
+                      message: String(text.prefix(100)),
+                      preferredStyle: .alert
+                  )
+                  alert.addAction(UIAlertAction(title: "OK", style: .default))
+                  self.present(alert, animated: true)
+                  
+                  // Try to send to bridge multiple times with delays
+                  sendToWebView(text: text, attempt: 0)
               }
               
               func handleSharedContent(url: String) {
-                  bridge?.call(handlerName: "onSharedURL", data: ["url": url]) { response in
-                      print("Shared URL handled: \(String(describing: response))")
+                  // Show native alert first for debugging
+                  let alert = UIAlertController(
+                      title: "Shared URL Received",
+                      message: url,
+                      preferredStyle: .alert
+                  )
+                  alert.addAction(UIAlertAction(title: "OK", style: .default))
+                  self.present(alert, animated: true)
+                  
+                  // Try to send to bridge multiple times with delays
+                  sendToWebView(url: url, attempt: 0)
+              }
+              
+              func sendToWebView(text: String, attempt: Int) {
+                  guard attempt < 10 else { return } // Try 10 times over 5 seconds
+                  
+                  if let bridge = bridge {
+                      bridge.call(handlerName: "onSharedText", data: ["text": text]) { response in
+                          print("✅ Shared text sent to WebView: \(String(describing: response))")
+                      }
+                  } else {
+                      // Bridge not ready, try again
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                          self.sendToWebView(text: text, attempt: attempt + 1)
+                      }
+                  }
+              }
+              
+              func sendToWebView(url: String, attempt: Int) {
+                  guard attempt < 10 else { return }
+                  
+                  if let bridge = bridge {
+                      bridge.call(handlerName: "onSharedURL", data: ["url": url]) { response in
+                          print("✅ Shared URL sent to WebView: \(String(describing: response))")
+                      }
+                  } else {
+                      // Bridge not ready, try again
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                          self.sendToWebView(url: url, attempt: attempt + 1)
+                      }
                   }
               }
 
@@ -481,6 +527,13 @@ jobs:
 
                   webView.evaluateJavaScript("alert('Bridge Initialized');")
                   webView.evaluateJavaScript("window._SETTINGS.APPTYPE = 'ios';")
+                  
+                  // Check for shared data after WebView loads
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                      if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                          appDelegate.checkForSharedData()
+                      }
+                  }
               }
 
               func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
@@ -529,11 +582,28 @@ jobs:
 
           class ShareViewController: UIViewController {
               
+              private let messageLabel: UILabel = {
+                  let label = UILabel()
+                  label.textAlignment = .center
+                  label.numberOfLines = 0
+                  label.translatesAutoresizingMaskIntoConstraints = false
+                  return label
+              }()
+              
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  
-                  // Show a simple alert while processing
                   view.backgroundColor = .systemBackground
+                  
+                  // Add message label
+                  view.addSubview(messageLabel)
+                  NSLayoutConstraint.activate([
+                      messageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      messageLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                      messageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                      messageLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+                  ])
+                  
+                  messageLabel.text = "Processing..."
                   
                   // Process the shared content immediately
                   processSharedContent()
@@ -542,8 +612,8 @@ jobs:
               func processSharedContent() {
                   guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
                         let attachments = extensionItem.attachments, !attachments.isEmpty else {
-                      print("❌ No attachments found")
-                      closeAndOpenApp()
+                      showMessage("No content to share")
+                      closeAfterDelay()
                       return
                   }
                   
@@ -562,10 +632,12 @@ jobs:
                           
                           if let text = textToSave {
                               self?.saveSharedData(text: text)
-                              print("✅ Saved plain text: \(text.prefix(50))...")
+                              self?.showMessage("✓ Saved!\nOpening app...")
+                              self?.closeAndOpenApp()
+                          } else {
+                              self?.showMessage("Could not read text")
+                              self?.closeAfterDelay()
                           }
-                          
-                          self?.closeAndOpenApp()
                       }
                       return
                   }
@@ -575,9 +647,12 @@ jobs:
                       itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (item, error) in
                           if let url = item as? URL {
                               self?.saveSharedData(url: url.absoluteString)
-                              print("✅ Saved URL: \(url.absoluteString)")
+                              self?.showMessage("✓ Saved URL!\nOpening app...")
+                              self?.closeAndOpenApp()
+                          } else {
+                              self?.showMessage("Could not read URL")
+                              self?.closeAfterDelay()
                           }
-                          self?.closeAndOpenApp()
                       }
                       return
                   }
@@ -587,21 +662,30 @@ jobs:
                       itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] (item, error) in
                           if let text = item as? String {
                               self?.saveSharedData(text: text)
-                              print("✅ Saved text: \(text.prefix(50))...")
+                              self?.showMessage("✓ Saved!\nOpening app...")
+                              self?.closeAndOpenApp()
+                          } else {
+                              self?.showMessage("Could not read text")
+                              self?.closeAfterDelay()
                           }
-                          self?.closeAndOpenApp()
                       }
                       return
                   }
                   
-                  // If no compatible content found
-                  print("❌ No compatible content type found")
-                  closeAndOpenApp()
+                  showMessage("No compatible content found")
+                  closeAfterDelay()
+              }
+              
+              func showMessage(_ text: String) {
+                  DispatchQueue.main.async { [weak self] in
+                      self?.messageLabel.text = text
+                  }
               }
               
               func saveSharedData(text: String) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                       sharedDefaults.set(text, forKey: "SharedText")
+                      sharedDefaults.set(true, forKey: "HasPendingShare")
                       sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
                   }
@@ -610,26 +694,30 @@ jobs:
               func saveSharedData(url: String) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                       sharedDefaults.set(url, forKey: "SharedURL")
+                      sharedDefaults.set(true, forKey: "HasPendingShare")
                       sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
                   }
               }
               
               func closeAndOpenApp() {
-                  DispatchQueue.main.async { [weak self] in
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                       guard let self = self else { return }
                       
                       let url = URL(string: "webkitapp://shared")!
                       
-                      // Try to open the main app
                       self.extensionContext?.open(url, completionHandler: { success in
-                          print(success ? "✅ Successfully opened main app" : "⚠️ Could not open main app")
-                          
-                          // Always close the extension, even if open fails
-                          self.extensionContext?.completeRequest(returningItems: nil, completionHandler: { _ in
-                              print("✅ Extension closed")
-                          })
+                          // Always close, regardless of success
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                              self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+                          }
                       })
+                  }
+              }
+              
+              func closeAfterDelay() {
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                      self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
                   }
               }
           }
