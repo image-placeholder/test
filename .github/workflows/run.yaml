@@ -20,8 +20,8 @@ jobs:
 
       - name: Generate Source Files
         run: |
-          # 1. Create AppDelegate.swift (your existing file - keeping it as is)
-          cat <<EOF > AppDelegate.swift
+          # 1. Create AppDelegate.swift with URL scheme handler
+          cat <<'EOF' > AppDelegate.swift
           import UIKit
           import WebKit
           import WKWebViewJavascriptBridge
@@ -40,10 +40,32 @@ jobs:
                   mainViewController = vc
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
+                  
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
-                  }     
+                  }
+                  
+                  // Check if launched from share extension
+                  if let url = launchOptions?[.url] as? URL {
+                      self.handleIncomingURL(url)
+                  }
+                  
                   return true
+              }
+              
+              // Handle URL scheme from share extension
+              func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+                  handleIncomingURL(url)
+                  return true
+              }
+              
+              private func handleIncomingURL(_ url: URL) {
+                  if url.scheme == "webkitapp" && url.host == "shared" {
+                      // Notify the web view that shared content is available
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                          self.mainViewController?.notifySharedContent()
+                      }
+                  }
               }
 
               func handleAppRefresh(task: BGAppRefreshTask) {
@@ -132,7 +154,19 @@ jobs:
                   UNUserNotificationCenter.current().delegate = self
                   self.bridge = WKWebViewJavascriptBridge(webView: webView)
 
-                  // Register all your existing handlers
+                  // Register all handlers
+                  registerAllHandlers()
+
+                  let url = URL(string: "https://snippets.marketingpipeliners.com")!
+                  webView.load(URLRequest(url: url))
+              }
+              
+              func notifySharedContent() {
+                  // Call JavaScript to notify about shared content
+                  self.bridge?.call(handlerName: "onSharedContent", data: ["available": true])
+              }
+              
+              func registerAllHandlers() {
                   self.bridge?.register(handlerName: "testiOSCallback") { (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       callback?("Response from testiOSCallback")
@@ -270,8 +304,6 @@ jobs:
                       DispatchQueue.main.async {
                           if UIApplication.shared.canOpenURL(url) {
                               UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                          } else {
-                              print("App not installed or invalid URL")
                           }
                       }
                   }
@@ -318,85 +350,38 @@ jobs:
                       }
                   }
 
-                  func isUserPremium() -> Bool {
-                      return UserDefaults.standard.bool(forKey: "isPremiumUser")
-                  }
-
-                  self.bridge?.register(handlerName: "unlockPremium") { (_, callback) in
-                      UserDefaults.standard.set(true, forKey: "isPremiumUser")
-                      callback?("Success: Premium Unlocked")
-                  }
-
-                  self.bridge?.register(handlerName: "premiumFeature") { [weak self] (parameters, callback) in
-                      guard isUserPremium() else {
-                          callback?("Error: This is a paid feature. Please upgrade.")
-                          return
-                      }
-                      DispatchQueue.main.async {
-                          let alert = UIAlertController(title: "Premium Access", message: "Executing paid function...", preferredStyle: .alert)
-                          alert.addAction(UIAlertAction(title: "OK", style: .default))
-                          self?.present(alert, animated: true)
-                      }
-                      callback?("Feature Executed")
-                  }
-
-                  self.bridge?.register(handlerName: "premiumFeature2") { [weak self] (parameters, callback) in
-                      guard let data = parameters as? [String: Any],
-                            let userId = data["userId"] as? String else {
-                          callback?("Error: Missing User ID")
-                          return
-                      }
-                      let url = URL(string: "https://your-api.com/check-subscription?uid=\(userId)")!
-                      let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
-                          if let data = data, let responseString = String(data: data, encoding: .utf8) {
-                              if responseString.contains("Yes") {
-                                  DispatchQueue.main.async {
-                                      let alert = UIAlertController(title: "Verified", message: "Premium access granted!", preferredStyle: .alert)
-                                      alert.addAction(UIAlertAction(title: "OK", style: .default))
-                                      self?.present(alert, animated: true)
-                                      callback?("Access Granted")
-                                  }
-                              } else {
-                                  callback?("Error: Subscription inactive")
-                              }
-                          } else {
-                              callback?("Error: Server unreachable")
-                          }
-                      }
-                      task.resume()
-                  }
-
                   // NEW: Handler to retrieve shared content from the extension
                   self.bridge?.register(handlerName: "getSharedContent") { (_, callback) in
                       if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                           let sharedText = sharedDefaults.string(forKey: "sharedText") ?? ""
                           let sharedURL = sharedDefaults.string(forKey: "sharedURL") ?? ""
+                          let timestamp = sharedDefaults.double(forKey: "sharedTimestamp")
                           
                           let result: [String: Any] = [
                               "text": sharedText,
-                              "url": sharedURL
+                              "url": sharedURL,
+                              "timestamp": timestamp,
+                              "hasContent": !sharedText.isEmpty || !sharedURL.isEmpty
                           ]
                           
                           // Clear after reading
                           sharedDefaults.removeObject(forKey: "sharedText")
                           sharedDefaults.removeObject(forKey: "sharedURL")
+                          sharedDefaults.removeObject(forKey: "sharedTimestamp")
+                          sharedDefaults.synchronize()
                           
                           callback?(result)
                       } else {
-                          callback?(["text": "", "url": ""])
+                          callback?(["text": "", "url": "", "hasContent": false])
                       }
                   }
-
-                  let url = URL(string: "https://snippets.marketingpipeliners.com")!
-                  webView.load(URLRequest(url: url))
               }
 
               func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
                   self.bridge?.call(handlerName: "testJavascriptHandler", data: ["foo": "before ready"], callback: { response in
                       print("JS responded: \(String(describing: response))")
                   })
-                  webView.evaluateJavaScript("alert('Bridge Initialized');")
-                  webView.evaluateJavaScript("window._SETTINGS.APPTYPE = 'ios';")
+                  webView.evaluateJavaScript("window._SETTINGS = window._SETTINGS || {}; window._SETTINGS.APPTYPE = 'ios';")
               }
 
               func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
@@ -433,123 +418,142 @@ jobs:
           }
           EOF
 
-          # 2. Create ShareViewController.swift for the Share Extension
-          cat <<EOF > ShareViewController.swift
+          # 2. Create ActionViewController.swift (Action Extension - more reliable than Share)
+          cat <<'EOF' > ActionViewController.swift
           import UIKit
-          import Social
+          import MobileCoreServices
 
-          class ShareViewController: UIViewController {
+          class ActionViewController: UIViewController {
               
               override func viewDidLoad() {
                   super.viewDidLoad()
                   
-                  // Add a small delay to show the UI briefly
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                      self.handleSharedContent()
-                  }
+                  // Set background
+                  view.backgroundColor = UIColor(white: 0, alpha: 0.5)
+                  
+                  // Add loading label
+                  let label = UILabel()
+                  label.text = "Saving to WebKitApp..."
+                  label.textColor = .white
+                  label.textAlignment = .center
+                  label.translatesAutoresizingMaskIntoConstraints = false
+                  view.addSubview(label)
+                  
+                  NSLayoutConstraint.activate([
+                      label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+                  ])
+                  
+                  // Process shared content
+                  handleSharedContent()
               }
               
               private func handleSharedContent() {
                   guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem else {
-                      self.closeExtension()
+                      closeExtension()
                       return
                   }
                   
                   var sharedText = ""
                   var sharedURL = ""
-                  
                   let group = DispatchGroup()
                   
-                  // Process all attachments
                   for attachment in extensionItem.attachments ?? [] {
-                      // Check for plain text
+                      // Plain text
                       if attachment.hasItemConformingToTypeIdentifier("public.plain-text") {
                           group.enter()
                           attachment.loadItem(forTypeIdentifier: "public.plain-text", options: nil) { (item, error) in
+                              defer { group.leave() }
                               if let text = item as? String {
                                   sharedText = text
                               } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
                                   sharedText = text
                               }
-                              group.leave()
                           }
                       }
                       
-                      // Check for URL
+                      // URL
                       if attachment.hasItemConformingToTypeIdentifier("public.url") {
                           group.enter()
                           attachment.loadItem(forTypeIdentifier: "public.url", options: nil) { (item, error) in
+                              defer { group.leave() }
                               if let url = item as? URL {
                                   sharedURL = url.absoluteString
+                              } else if let data = item as? Data, let urlString = String(data: data, encoding: .utf8) {
+                                  sharedURL = urlString
                               }
-                              group.leave()
                           }
                       }
                   }
                   
-                  // Wait for all items to load
                   group.notify(queue: .main) {
-                      self.saveToSharedContainer(text: sharedText, url: sharedURL)
-                      self.openMainApp()
+                      print("📤 Sharing - Text: '\(sharedText)', URL: '\(sharedURL)'")
+                      self.saveAndOpen(text: sharedText, url: sharedURL)
                   }
               }
               
-              private func saveToSharedContainer(text: String, url: String) {
+              private func saveAndOpen(text: String, url: String) {
+                  // Save to App Group
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                       if !text.isEmpty {
                           sharedDefaults.set(text, forKey: "sharedText")
+                          print("✅ Saved text: \(text)")
                       }
                       if !url.isEmpty {
                           sharedDefaults.set(url, forKey: "sharedURL")
+                          print("✅ Saved URL: \(url)")
                       }
                       sharedDefaults.set(Date().timeIntervalSince1970, forKey: "sharedTimestamp")
                       sharedDefaults.synchronize()
                   }
-              }
-              
-              private func openMainApp() {
-                  let url = URL(string: "webkitapp://shared")!
                   
-                  // Try to open using the extension context
-                  _ = self.openURL(url)
+                  // Open main app
+                  if let url = URL(string: "webkitapp://shared") {
+                      openURL(url)
+                  }
                   
-                  // Close the extension
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                  // Close extension after delay
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                       self.closeExtension()
                   }
               }
               
-              @objc private func openURL(_ url: URL) -> Bool {
+              @objc private func openURL(_ url: URL) {
                   var responder: UIResponder? = self
-                  while responder != nil {
-                      if let application = responder as? UIApplication {
-                          return application.perform(#selector(openURL(_:)), with: url) != nil
+                  let selector = #selector(openURL(_:))
+                  
+                  while let currentResponder = responder {
+                      if currentResponder != self && currentResponder.responds(to: selector) {
+                          currentResponder.perform(selector, with: url)
+                          return
                       }
-                      responder = responder?.next
+                      responder = currentResponder.next
                   }
-                  return false
+                  
+                  // Fallback: try to use extensionContext
+                  extensionContext?.open(url, completionHandler: nil)
               }
               
               private func closeExtension() {
-                  self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+                  extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
               }
           }
           EOF
 
-          # 3. Create Info.plist for main app (updated with URL scheme and App Groups)
-          cat <<EOF > Info.plist
+          # 3. Create Info.plist for main app
+          cat <<'EOF' > Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>
-              <string>WebKitApp</string>
+              <string>$(EXECUTABLE_NAME)</string>
               <key>CFBundleIdentifier</key>
-              <string>com.example.webkitapp</string>
+              <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
               <key>CFBundleName</key>
-              <string>WebKitApp</string>
+              <string>$(PRODUCT_NAME)</string>
               <key>CFBundlePackageType</key>
-              <string>APPL</string>
+              <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
               <key>CFBundleShortVersionString</key>
               <string>1.0</string>
               <key>CFBundleVersion</key>
@@ -587,22 +591,22 @@ jobs:
           </plist>
           EOF
 
-          # 4. Create Info.plist for Share Extension
-          cat <<EOF > ShareExtension-Info.plist
+          # 4. Create Info.plist for Action Extension
+          cat <<'EOF' > ActionExtension-Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>CFBundleDisplayName</key>
-              <string>WebKitApp</string>
+              <string>Save to App</string>
               <key>CFBundleExecutable</key>
-              <string>\$(EXECUTABLE_NAME)</string>
+              <string>$(EXECUTABLE_NAME)</string>
               <key>CFBundleIdentifier</key>
-              <string>\$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+              <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
               <key>CFBundleName</key>
-              <string>\$(PRODUCT_NAME)</string>
+              <string>$(PRODUCT_NAME)</string>
               <key>CFBundlePackageType</key>
-              <string>\$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+              <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
               <key>CFBundleShortVersionString</key>
               <string>1.0</string>
               <key>CFBundleVersion</key>
@@ -617,60 +621,45 @@ jobs:
                   <key>NSExtensionMainStoryboard</key>
                   <string>MainInterface</string>
                   <key>NSExtensionPointIdentifier</key>
-                  <string>com.apple.share-services</string>
+                  <string>com.apple.ui-services</string>
               </dict>
           </dict>
           </plist>
           EOF
-          
-          # 5. Create MainInterface.storyboard for Share Extension
-          cat <<EOF > MainInterface.storyboard
+
+          # 5. Create MainInterface.storyboard for Action Extension
+          cat <<'EOF' > MainInterface.storyboard
           <?xml version="1.0" encoding="UTF-8"?>
-          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="j1y-V4-xli">
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22505" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="ObA-dk-sSI">
               <device id="retina6_12" orientation="portrait" appearance="light"/>
               <dependencies>
-                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="22504"/>
                   <capability name="Safe area layout guides" minToolsVersion="9.0"/>
                   <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
               </dependencies>
               <scenes>
-                  <scene sceneID="ceB-am-kn3">
+                  <scene sceneID="7MM-of-jgj">
                       <objects>
-                          <viewController id="j1y-V4-xli" customClass="ShareViewController" customModule="ShareExtension" customModuleProvider="target" sceneMemberID="viewController">
-                              <view key="view" opaque="NO" contentMode="scaleToFill" id="wbc-yd-nQP">
-                                  <rect key="frame" x="0.0" y="0.0" width="393" height="300"/>
+                          <viewController id="ObA-dk-sSI" customClass="ActionViewController" customModule="ActionExtension" customModuleProvider="target" sceneMemberID="viewController">
+                              <view key="view" contentMode="scaleToFill" id="zMn-AG-sqS">
+                                  <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                                   <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                                  <subviews>
-                                      <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Saving to WebKitApp..." textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="NdF-c7-GXg">
-                                          <rect key="frame" x="20" y="139.66666666666666" width="353" height="20.333333333333343"/>
-                                          <fontDescription key="fontDescription" type="system" pointSize="17"/>
-                                          <nil key="textColor"/>
-                                          <nil key="highlightedColor"/>
-                                      </label>
-                                  </subviews>
                                   <color key="backgroundColor" white="0.0" alpha="0.0" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
-                                  <constraints>
-                                      <constraint firstItem="NdF-c7-GXg" firstAttribute="centerY" secondItem="wbc-yd-nQP" secondAttribute="centerY" id="7MZ-FJ-6bG"/>
-                                      <constraint firstItem="NdF-c7-GXg" firstAttribute="leading" secondItem="kDf-ej-6b7" secondAttribute="leading" constant="20" id="Q8r-Yz-vtC"/>
-                                      <constraint firstItem="kDf-ej-6b7" firstAttribute="trailing" secondItem="NdF-c7-GXg" secondAttribute="trailing" constant="20" id="sfe-3s-1fN"/>
-                                  </constraints>
-                                  <viewLayoutGuide key="safeArea" id="kDf-ej-6b7"/>
+                                  <viewLayoutGuide key="safeArea" id="VXr-Tz-HHm"/>
                               </view>
-                              <freeformSimulatedSizeMetrics key="simulatedDestinationMetrics"/>
-                              <size key="freeformSize" width="393" height="300"/>
                           </viewController>
-                          <placeholder placeholderIdentifier="IBFirstResponder" id="CEy-Cv-SGf" userLabel="First Responder" sceneMemberID="firstResponder"/>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="X47-rx-isc" userLabel="First Responder" sceneMemberID="firstResponder"/>
                       </objects>
-                      <point key="canvasLocation" x="139" y="153"/>
+                      <point key="canvasLocation" x="140" y="131"/>
                   </scene>
               </scenes>
           </document>
           EOF
 
-      - name: Create Xcode Project with Share Extension
+      - name: Create Xcode Project with Action Extension
         run: |
           gem install xcodeproj
-          ruby -e "
+          ruby <<'RUBY'
           require 'xcodeproj'
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
           
@@ -690,37 +679,41 @@ jobs:
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
             config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'WebKitApp.entitlements'
+            config.build_settings['DEVELOPMENT_TEAM'] = ''
           end
 
-          # Create Share Extension target
-          share_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
+          # Create Action Extension target
+          action_target = project.new_target(:app_extension, 'ActionExtension', :ios, '15.0')
           
-          # Add files to share extension
-          share_vc = project.new_file('ShareViewController.swift')
-          share_info = project.new_file('ShareExtension-Info.plist')
-          share_target.add_file_references([share_vc])
+          # Add files to action extension
+          action_vc = project.new_file('ActionViewController.swift')
+          action_info = project.new_file('ActionExtension-Info.plist')
+          action_storyboard = project.new_file('MainInterface.storyboard')
+          action_target.add_file_references([action_vc])
+          action_target.resources_build_phase.add_file_reference(action_storyboard)
 
-          # Configure share extension target
-          share_target.build_configurations.each do |config|
-            config.build_settings['INFOPLIST_FILE'] = 'ShareExtension-Info.plist'
+          # Configure action extension target
+          action_target.build_configurations.each do |config|
+            config.build_settings['INFOPLIST_FILE'] = 'ActionExtension-Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
-            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.ShareExtension'
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.ActionExtension'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'ShareExtension.entitlements'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'ActionExtension.entitlements'
+            config.build_settings['DEVELOPMENT_TEAM'] = ''
           end
 
-          # Create dependency from main app to share extension
-          target.add_dependency(share_target)
+          # Create dependency from main app to action extension
+          target.add_dependency(action_target)
 
           project.recreate_user_schemes
           project.save
-          "
+          RUBY
 
       - name: Create Entitlements Files
         run: |
           # Main app entitlements
-          cat <<EOF > WebKitApp.entitlements
+          cat <<'EOF' > WebKitApp.entitlements
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -733,8 +726,8 @@ jobs:
           </plist>
           EOF
 
-          # Share extension entitlements
-          cat <<EOF > ShareExtension.entitlements
+          # Action extension entitlements
+          cat <<'EOF' > ActionExtension.entitlements
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -749,7 +742,7 @@ jobs:
 
       - name: Create and Install Pods
         run: |
-          cat <<EOF > Podfile
+          cat <<'EOF' > Podfile
           platform :ios, '15.0'
           use_frameworks!
           
@@ -757,8 +750,8 @@ jobs:
             pod 'WKWebViewJavascriptBridge', '~> 1.2.0'
           end
 
-          target 'ShareExtension' do
-            # Share extension doesn't need the bridge
+          target 'ActionExtension' do
+            # Action extension doesn't need the bridge
           end
 
           post_install do |installer|
@@ -792,5 +785,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WebKit-WebView-IPA-with-ShareExtension
+          name: WebKit-WebView-IPA-ActionExtension
           path: WebKitApp-Unsigned.ipa
