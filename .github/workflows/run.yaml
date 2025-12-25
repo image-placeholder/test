@@ -44,31 +44,50 @@ jobs:
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
                   }     
                   
-                  // Check if app was opened via share extension
-                  self.checkForSharedData()
+                  // Check for shared data after a delay to ensure WebView is ready
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                      self.checkForSharedData()
+                  }
                   
                   return true
               }
+              
+              // Handle URL scheme opens (when share extension opens the app)
+              func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+                  if url.scheme == "webkitapp" {
+                      // Give WebView time to load, then check for shared data
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                          self.checkForSharedData()
+                      }
+                      return true
+                  }
+                  return false
+              }
 
               func checkForSharedData() {
-                  if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
-                      if let sharedText = sharedDefaults.string(forKey: "SharedText") {
-                          // Clear the shared data
-                          sharedDefaults.removeObject(forKey: "SharedText")
-                          
-                          // Pass to WebView via bridge once it's ready
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                              self.mainViewController?.handleSharedContent(text: sharedText)
-                          }
-                      }
+                  guard let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") else {
+                      print("❌ Could not access shared defaults")
+                      return
+                  }
+                  
+                  // Check for shared text
+                  if let sharedText = sharedDefaults.string(forKey: "SharedText") {
+                      print("📱 Found shared text: \(sharedText.prefix(50))...")
+                      sharedDefaults.removeObject(forKey: "SharedText")
+                      sharedDefaults.removeObject(forKey: "SharedTimestamp")
+                      sharedDefaults.synchronize()
                       
-                      if let sharedURL = sharedDefaults.string(forKey: "SharedURL") {
-                          sharedDefaults.removeObject(forKey: "SharedURL")
-                          
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                              self.mainViewController?.handleSharedContent(url: sharedURL)
-                          }
-                      }
+                      self.mainViewController?.handleSharedContent(text: sharedText)
+                  }
+                  
+                  // Check for shared URL
+                  if let sharedURL = sharedDefaults.string(forKey: "SharedURL") {
+                      print("📱 Found shared URL: \(sharedURL)")
+                      sharedDefaults.removeObject(forKey: "SharedURL")
+                      sharedDefaults.removeObject(forKey: "SharedTimestamp")
+                      sharedDefaults.synchronize()
+                      
+                      self.mainViewController?.handleSharedContent(url: sharedURL)
                   }
               }
 
@@ -506,72 +525,105 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   
-                  // Process the shared content
-                  if let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem {
-                      if let itemProvider = extensionItem.attachments?.first {
-                          
-                          // Handle Text
-                          if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
-                              itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { (item, error) in
-                                  if let text = item as? String {
-                                      self.saveSharedData(text: text)
-                                  }
-                                  self.openMainApp()
+                  // Process the shared content immediately
+                  processSharedContent()
+              }
+              
+              func processSharedContent() {
+                  guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
+                        let attachments = extensionItem.attachments else {
+                      closeExtension()
+                      return
+                  }
+                  
+                  // Try to find text or URL content
+                  for itemProvider in attachments {
+                      // Priority 1: Plain Text (works with Notes)
+                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                          itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (item, error) in
+                              if let text = item as? String {
+                                  self?.saveSharedData(text: text)
+                              } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
+                                  self?.saveSharedData(text: text)
                               }
+                              self?.openMainAppAndClose()
                           }
-                          // Handle URL
-                          else if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                              itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, error) in
-                                  if let url = item as? URL {
-                                      self.saveSharedData(url: url.absoluteString)
-                                  }
-                                  self.openMainApp()
+                          return
+                      }
+                      
+                      // Priority 2: URL
+                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                          itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (item, error) in
+                              if let url = item as? URL {
+                                  self?.saveSharedData(url: url.absoluteString)
                               }
+                              self?.openMainAppAndClose()
                           }
-                          // Handle plain text (for Notes app compatibility)
-                          else if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                              itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, error) in
-                                  if let text = item as? String {
-                                      self.saveSharedData(text: text)
-                                  }
-                                  self.openMainApp()
+                          return
+                      }
+                      
+                      // Priority 3: Generic Text
+                      if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+                          itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] (item, error) in
+                              if let text = item as? String {
+                                  self?.saveSharedData(text: text)
                               }
+                              self?.openMainAppAndClose()
                           }
+                          return
                       }
                   }
+                  
+                  // If no compatible content found, just close
+                  closeExtension()
               }
               
               func saveSharedData(text: String) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                       sharedDefaults.set(text, forKey: "SharedText")
+                      sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
+                      print("✅ Saved shared text: \(text.prefix(50))...")
                   }
               }
               
               func saveSharedData(url: String) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
                       sharedDefaults.set(url, forKey: "SharedURL")
+                      sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
                       sharedDefaults.synchronize()
+                      print("✅ Saved shared URL: \(url)")
                   }
               }
               
-              func openMainApp() {
-                  // Open the main app using URL scheme
-                  let url = URL(string: "webkitapp://shared")!
+              func openMainAppAndClose() {
+                  DispatchQueue.main.async { [weak self] in
+                      // Try to open the main app
+                      if let url = URL(string: "webkitapp://shared") {
+                          self?.openURL(url)
+                      }
+                      
+                      // Close the extension after a brief delay
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                          self?.closeExtension()
+                      }
+                  }
+              }
+              
+              func closeExtension() {
+                  self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+              }
+              
+              @objc func openURL(_ url: URL) {
                   var responder: UIResponder? = self
                   while responder != nil {
                       if let application = responder as? UIApplication {
                           application.perform(#selector(openURL(_:)), with: url)
-                          break
+                          return
                       }
                       responder = responder?.next
                   }
-                  
-                  // Close the share extension
-                  self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
               }
-              
-              @objc func openURL(_ url: URL) {}
           }
           EOF
 
