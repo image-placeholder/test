@@ -26,7 +26,7 @@ jobs:
           import WebKit
           import WKWebViewJavascriptBridge
           import AVFoundation
-          import UserNotifications // Added for notifications
+          import UserNotifications
           import BackgroundTasks
 
           @main
@@ -37,14 +37,40 @@ jobs:
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
                   let vc = ViewController()
+                  mainViewController = vc
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
                   }     
+                  
+                  // Check if app was opened via share extension
+                  self.checkForSharedData()
+                  
                   return true
               }
 
+              func checkForSharedData() {
+                  if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
+                      if let sharedText = sharedDefaults.string(forKey: "SharedText") {
+                          // Clear the shared data
+                          sharedDefaults.removeObject(forKey: "SharedText")
+                          
+                          // Pass to WebView via bridge once it's ready
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                              self.mainViewController?.handleSharedContent(text: sharedText)
+                          }
+                      }
+                      
+                      if let sharedURL = sharedDefaults.string(forKey: "SharedURL") {
+                          sharedDefaults.removeObject(forKey: "SharedURL")
+                          
+                          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                              self.mainViewController?.handleSharedContent(url: sharedURL)
+                          }
+                      }
+                  }
+              }
 
               func handleAppRefresh(task: BGAppRefreshTask) {
                   let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
@@ -60,7 +86,7 @@ jobs:
 
               func scheduleAppRefresh() {
                   let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
-                  request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60) // 2 hours
+                  request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60)
                   try? BGTaskScheduler.shared.submit(request)
               }
               
@@ -70,46 +96,54 @@ jobs:
               var webView: WKWebView!
               var bridge: WKWebViewJavascriptBridge?
 
-
-              // Add this so notifications show up even when app is in foreground
               func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
                   completionHandler([.banner, .sound])
               }
 
-
-
-          // MARK: - Bridge Response Helper
-          struct BridgeResponse {
-              static func success(_ data: Any? = nil, message: String? = nil) -> [String: Any] {
-                  var response: [String: Any] = ["success": true]
-                  if let data = data {
-                      response["data"] = data
+              // MARK: - Handle Shared Content
+              func handleSharedContent(text: String) {
+                  bridge?.call(handlerName: "onSharedText", data: ["text": text]) { response in
+                      print("Shared text handled: \(String(describing: response))")
                   }
-                  if let message = message {
-                      response["message"] = message
-                  }
-                  return response
               }
               
-              static func error(_ message: String, code: String? = nil, details: Any? = nil) -> [String: Any] {
-                  var response: [String: Any] = [
-                      "success": false,
-                      "error": message
-                  ]
-                  if let code = code {
-                      response["errorCode"] = code
+              func handleSharedContent(url: String) {
+                  bridge?.call(handlerName: "onSharedURL", data: ["url": url]) { response in
+                      print("Shared URL handled: \(String(describing: response))")
                   }
-                  if let details = details {
-                      response["details"] = details
-                  }
-                  return response
               }
-          }
+
+              // MARK: - Bridge Response Helper
+              struct BridgeResponse {
+                  static func success(_ data: Any? = nil, message: String? = nil) -> [String: Any] {
+                      var response: [String: Any] = ["success": true]
+                      if let data = data {
+                          response["data"] = data
+                      }
+                      if let message = message {
+                          response["message"] = message
+                      }
+                      return response
+                  }
+                  
+                  static func error(_ message: String, code: String? = nil, details: Any? = nil) -> [String: Any] {
+                      var response: [String: Any] = [
+                          "success": false,
+                          "error": message
+                      ]
+                      if let code = code {
+                          response["errorCode"] = code
+                      }
+                      if let details = details {
+                          response["details"] = details
+                      }
+                      return response
+                  }
+              }
               
               override func loadView() {
                   let webConfiguration = WKWebViewConfiguration()
 
-                  // Inject JavaScript into the WKWebView before loading content
                   let jsSetup = """
                   function setupWKWebViewJavascriptBridge(callback) {
                       if (window.WKWebViewJavascriptBridge) { return callback(WKWebViewJavascriptBridge); }
@@ -134,44 +168,36 @@ jobs:
               override func viewDidLoad() {
                   super.viewDidLoad()
                   if #available(iOS 16.4, *) {
-                  // This is FALSE by default in Release builds, but explicitly setting it is safer
-                  webView.isInspectable = false 
+                      webView.isInspectable = false 
                   }
                   UNUserNotificationCenter.current().delegate = self
-                  // Instantiate the bridge after the WebView is loaded
                   self.bridge = WKWebViewJavascriptBridge(webView: webView)
 
-                  // Register Native Handler for JS to call
                   self.bridge?.register(handlerName: "testiOSCallback") { (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       callback?("Response from testiOSCallback")
                   }
 
+                  self.bridge?.register(handlerName: "scheduleBackgroundSync") { (parameters, callback) in
+                      let hours = (parameters as? [String: Any])?["hours"] as? Double ?? 2.0
+                      
+                      let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
+                      request.earliestBeginDate = Date(timeIntervalSinceNow: hours * 3600)
+                      
+                      do {
+                          try BGTaskScheduler.shared.submit(request)
+                          callback?("Successfully scheduled for \(hours) hours from now")
+                      } catch {
+                          callback?("Error: \(error.localizedDescription)")
+                      }
+                  }
 
-                self.bridge?.register(handlerName: "scheduleBackgroundSync") { (parameters, callback) in
-                    let hours = (parameters as? [String: Any])?["hours"] as? Double ?? 2.0
-                    
-                    let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
-                    request.earliestBeginDate = Date(timeIntervalSinceNow: hours * 3600)
-                    
-                    do {
-                        try BGTaskScheduler.shared.submit(request)
-                        callback?("Successfully scheduled for \(hours) hours from now")
-                    } catch {
-                        callback?("Error: \(error.localizedDescription)")
-                    }
-                }
-
-                  // Register Native Handler for JS to call
                   self.bridge?.register(handlerName: "showNotification") { [weak self] (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       
-                      // Switch to the main thread to present the UI safely
                       DispatchQueue.main.async {
-                          // Guard against self being nil
                           guard let strongSelf = self else { return }
                           
-                          // Ensure we aren't already presenting something (prevents "balanced transitions" crash)
                           if strongSelf.presentedViewController != nil {
                               print("An alert is already being presented.")
                               return
@@ -187,15 +213,11 @@ jobs:
                           )
                           
                           alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
-                          
-                          // Present the alert safely
                           strongSelf.present(alert, animated: true, completion: nil)
                       }
                       
                       callback?("Response from testiOSCallback")
                   }
-
-
 
                   self.bridge?.register(handlerName: "vibrate") { (parameters, _) in
                       DispatchQueue.main.async {
@@ -204,276 +226,237 @@ jobs:
                       }
                   }
 
-                self.bridge?.register(handlerName: "getDeviceInfo") { (_, callback) in
-                    UIDevice.current.isBatteryMonitoringEnabled = true
-                    let info = [
-                        "model": UIDevice.current.model,
-                        "battery": "\(UIDevice.current.batteryLevel * 100)%",
-                        "system": UIDevice.current.systemVersion
-                    ]
-                    callback?(info)
-                }
+                  self.bridge?.register(handlerName: "getDeviceInfo") { (_, callback) in
+                      UIDevice.current.isBatteryMonitoringEnabled = true
+                      let info = [
+                          "model": UIDevice.current.model,
+                          "battery": "\(UIDevice.current.batteryLevel * 100)%",
+                          "system": UIDevice.current.systemVersion
+                      ]
+                      callback?(info)
+                  }
 
-                   self.bridge?.register(handlerName: "setBrightness") { (parameters, _) in
-                    if let level = (parameters as? [String: Any])?["level"] as? CGFloat {
-                        DispatchQueue.main.async { UIScreen.main.brightness = level }
-                    }
-                }             
+                  self.bridge?.register(handlerName: "setBrightness") { (parameters, _) in
+                      if let level = (parameters as? [String: Any])?["level"] as? CGFloat {
+                          DispatchQueue.main.async { UIScreen.main.brightness = level }
+                      }
+                  }             
 
+                  self.bridge?.register(handlerName: "nativeShare") { [weak self] (parameters, _) in
+                      guard let text = (parameters as? [String: Any])?["text"] as? String else { return }
+                      DispatchQueue.main.async {
+                          let ac = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+                          self?.present(ac, animated: true)
+                      }
+                  }             
 
-                   self.bridge?.register(handlerName: "nativeShare") { [weak self] (parameters, _) in
-                    guard let text = (parameters as? [String: Any])?["text"] as? String else { return }
-                    DispatchQueue.main.async {
-                        let ac = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-                        self?.present(ac, animated: true)
-                    }
-                }             
-
-                self.bridge?.register(handlerName: "saveSecure") { (parameters, callback) in
-                    let data = parameters as? [String: Any]
-                    let key = data?["key"] as? String ?? "default"
-                    let value = data?["value"] as? String ?? ""
-                
-                    let query: [String: Any] = [
-                        kSecClass as String: kSecClassGenericPassword,
-                        kSecAttrAccount as String: key,
-                        kSecValueData as String: value.data(using: .utf8)!
-                    ]
-                    SecItemDelete(query as CFDictionary) // Clear existing
-                    let status = SecItemAdd(query as CFDictionary, nil)
-                    callback?(status == errSecSuccess ? "Success" : "Error")
-                }
-
+                  self.bridge?.register(handlerName: "saveSecure") { (parameters, callback) in
+                      let data = parameters as? [String: Any]
+                      let key = data?["key"] as? String ?? "default"
+                      let value = data?["value"] as? String ?? ""
+                  
+                      let query: [String: Any] = [
+                          kSecClass as String: kSecClassGenericPassword,
+                          kSecAttrAccount as String: key,
+                          kSecValueData as String: value.data(using: .utf8)!
+                      ]
+                      SecItemDelete(query as CFDictionary)
+                      let status = SecItemAdd(query as CFDictionary, nil)
+                      callback?(status == errSecSuccess ? "Success" : "Error")
+                  }
 
                   self.bridge?.register(handlerName: "clearCookies") { (_, callback) in
-                    DispatchQueue.main.async {
-                        let dataStore = WKWebsiteDataStore.default()
-                        let types = WKWebsiteDataStore.allWebsiteDataTypes()
-                        let dateFrom = Date(timeIntervalSince1970: 0)
-                
-                        dataStore.removeData(ofTypes: types, modifiedSince: dateFrom) {
-                            callback?("Cookies Cleared")
-                        }
-                    }
-                }              
+                      DispatchQueue.main.async {
+                          let dataStore = WKWebsiteDataStore.default()
+                          let types = WKWebsiteDataStore.allWebsiteDataTypes()
+                          let dateFrom = Date(timeIntervalSince1970: 0)
+                  
+                          dataStore.removeData(ofTypes: types, modifiedSince: dateFrom) {
+                              callback?("Cookies Cleared")
+                          }
+                      }
+                  }              
 
-
-                  
-              self.bridge?.register(handlerName: "toggleFlashlight") { (parameters, callback) in
-                  // 1. Try to get the hardware
-                  guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else {
-                      callback?("Error: Hardware not available") // Resolve even if hardware fails
-                      return 
-                  }
-                  
-                  let isOn = (parameters as? [String: Any])?["on"] as? Bool ?? false
-                  
-                  do {
-                      try device.lockForConfiguration()
-                      device.torchMode = isOn ? .on : .off
-                      device.unlockForConfiguration()
+                  self.bridge?.register(handlerName: "toggleFlashlight") { (parameters, callback) in
+                      guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else {
+                          callback?("Error: Hardware not available")
+                          return 
+                      }
                       
-                      // 2. Crucial: Tell JS we are done!
-                      callback?("Flashlight set to \(isOn)") 
-                  } catch {
-                      callback?("Error: Could not lock hardware")
+                      let isOn = (parameters as? [String: Any])?["on"] as? Bool ?? false
+                      
+                      do {
+                          try device.lockForConfiguration()
+                          device.torchMode = isOn ? .on : .off
+                          device.unlockForConfiguration()
+                          callback?("Flashlight set to \(isOn)") 
+                      } catch {
+                          callback?("Error: Could not lock hardware")
+                      }
                   }
-              }
 
+                  self.bridge?.register(handlerName: "showLocalPush") { (parameters, callback) in
+                      let center = UNUserNotificationCenter.current()
+                      
+                      center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                          if granted {
+                              let data = parameters as? [String: Any]
+                              let title = data?["title"] as? String ?? "New Message"
+                              let body = data?["body"] as? String ?? "You have a new notification."
+                              
+                              let content = UNMutableNotificationContent()
+                              content.title = title
+                              content.body = body
+                              content.sound = .default
+                              
+                              let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+                              
+                              let request = UNNotificationRequest(
+                                  identifier: UUID().uuidString, 
+                                  content: content, 
+                                  trigger: trigger
+                              )
+                              
+                              center.add(request) { (error) in
+                                  if let error = error {
+                                      callback?("Error: \(error.localizedDescription)")
+                                  } else {
+                                      callback?("Notification Scheduled")
+                                  }
+                              }
+                          } else {
+                              callback?("Permission Denied")
+                          }
+                      }
+                  }
 
-              self.bridge?.register(handlerName: "showLocalPush") { (parameters, callback) in
-                  let center = UNUserNotificationCenter.current()
-                  
-                  // 1. Request Permission first
-                  center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-                      if granted {
-                          let data = parameters as? [String: Any]
-                          let title = data?["title"] as? String ?? "New Message"
-                          let body = data?["body"] as? String ?? "You have a new notification."
-                          
-                          // 2. Create Content
-                          let content = UNMutableNotificationContent()
-                          content.title = title
-                          content.body = body
-                          content.sound = .default
-                          
-                          // 3. Create Trigger (Show after 1 second)
-                          let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-                          
-                          // 4. Create Request
-                          let request = UNNotificationRequest(
-                              identifier: UUID().uuidString, 
-                              content: content, 
-                              trigger: trigger
-                          )
-                          
-                          // 5. Schedule
-                          center.add(request) { (error) in
-                              if let error = error {
-                                  callback?("Error: \(error.localizedDescription)")
-                              } else {
-                                  callback?("Notification Scheduled")
+                  self.bridge?.register(handlerName: "openURL") { (parameters, _) in
+                      guard let urlString = (parameters as? [String: Any])?["url"] as? String,
+                            let url = URL(string: urlString) else { return }
+                      DispatchQueue.main.async {
+                          if UIApplication.shared.canOpenURL(url) {
+                              UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                          } else {
+                              print("App not installed or invalid URL")
+                          }
+                      }
+                  }
+
+                  self.bridge?.register(handlerName: "requestNotificationPermission") { (parameters, callback) in
+                      let center = UNUserNotificationCenter.current()
+                      
+                      center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                          if let error = error {
+                              callback?(false)
+                          } else if granted {
+                              callback?(granted)
+                          } else {
+                              callback?(false)
+                          }
+                      }
+                  }
+
+                  self.bridge?.register(handlerName: "lockOrientation") { (parameters, _) in
+                      if let orientation = (parameters as? [String: Any])?["orientation"] as? String {
+                          DispatchQueue.main.async {
+                              if orientation == "portrait" {
+                                  UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+                              } else if orientation == "landscape" {
+                                  UIDevice.current.setValue(UIInterfaceOrientation.landscapeLeft.rawValue, forKey: "orientation")
                               }
                           }
-                      } else {
-                          callback?("Permission Denied")
                       }
                   }
-              }
-
-
-
-             self.bridge?.register(handlerName: "openURL") { (parameters, _) in
-                  guard let urlString = (parameters as? [String: Any])?["url"] as? String,
-                        let url = URL(string: urlString) else { return }
-                  DispatchQueue.main.async {
-                      if UIApplication.shared.canOpenURL(url) {
-                          UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                      } else {
-                          // Handle error if app is not installed (e.g., show an alert or handle fallback)
-                          print("App not installed or invalid URL")
+                  
+                  self.bridge?.register(handlerName: "getBatteryInfo") { (_, callback) in
+                      UIDevice.current.isBatteryMonitoringEnabled = true
+                      let batteryLevel = UIDevice.current.batteryLevel * 100
+                      let batteryState: String
+                      switch UIDevice.current.batteryState {
+                      case .charging: batteryState = "Charging"
+                      case .full: batteryState = "Full"
+                      case .unplugged: batteryState = "Unplugged"
+                      default: batteryState = "Unknown"
                       }
+                      callback?(["batteryLevel": "\(batteryLevel)%", "batteryState": batteryState])
                   }
-              }
-
-
-           self.bridge?.register(handlerName: "requestNotificationPermission") { (parameters, callback) in
-                // 1. Request Notification Permission
-                let center = UNUserNotificationCenter.current()
-                
-                center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-                    if let error = error {
-                        // If error occurs during permission request, callback with error message
-                        callback?(false)
-                    } else if granted {
-                        // If permission is granted, callback success
-                        callback?(granted)
-                    } else {
-                        // If permission is denied, callback denial message
-                        callback?(false)
-                    }
-                }
-            }
-
-
-              
-              self.bridge?.register(handlerName: "lockOrientation") { (parameters, _) in
-                  if let orientation = (parameters as? [String: Any])?["orientation"] as? String {
+                  
+                  self.bridge?.register(handlerName: "openMaps") { (parameters, _) in
+                      guard let address = (parameters as? [String: Any])?["address"] as? String else { return }
                       DispatchQueue.main.async {
-                          if orientation == "portrait" {
-                              UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
-                          } else if orientation == "landscape" {
-                              UIDevice.current.setValue(UIInterfaceOrientation.landscapeLeft.rawValue, forKey: "orientation")
+                          let urlString = "https://maps.apple.com/?q=\(address)"
+                          if let url = URL(string: urlString) {
+                              UIApplication.shared.open(url, options: [:], completionHandler: nil)
                           }
                       }
                   }
-              }
-              
-              self.bridge?.register(handlerName: "getBatteryInfo") { (_, callback) in
-                  UIDevice.current.isBatteryMonitoringEnabled = true
-                  let batteryLevel = UIDevice.current.batteryLevel * 100
-                  let batteryState: String
-                  switch UIDevice.current.batteryState {
-                  case .charging: batteryState = "Charging"
-                  case .full: batteryState = "Full"
-                  case .unplugged: batteryState = "Unplugged"
-                  default: batteryState = "Unknown"
+
+                  func isUserPremium() -> Bool {
+                      return UserDefaults.standard.bool(forKey: "isPremiumUser")
                   }
-                  callback?(["batteryLevel": "\(batteryLevel)%", "batteryState": batteryState])
-              }
-              
-              self.bridge?.register(handlerName: "openMaps") { (parameters, _) in
-                  guard let address = (parameters as? [String: Any])?["address"] as? String else { return }
-                  DispatchQueue.main.async {
-                      let urlString = "https://maps.apple.com/?q=\(address)"
-                      if let url = URL(string: urlString) {
-                          UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                  
+                  self.bridge?.register(handlerName: "unlockPremium") { (_, callback) in
+                      UserDefaults.standard.set(true, forKey: "isPremiumUser")
+                      callback?("Success: Premium Unlocked")
+                  }
+                  
+                  self.bridge?.register(handlerName: "premiumFeature") { [weak self] (parameters, callback) in
+                      guard isUserPremium() else {
+                          callback?("Error: This is a paid feature. Please upgrade.")
+                          return
                       }
+                      
+                      DispatchQueue.main.async {
+                          let alert = UIAlertController(title: "Premium Access", message: "Executing paid function...", preferredStyle: .alert)
+                          alert.addAction(UIAlertAction(title: "OK", style: .default))
+                          self?.present(alert, animated: true)
+                      }
+                      callback?("Feature Executed")
                   }
-              }
 
-
-              // Helper to check status
-                func isUserPremium() -> Bool {
-                    return UserDefaults.standard.bool(forKey: "isPremiumUser")
-                }
-                
-                // 1. Function to 'unlock' (simulating a purchase)
-                self.bridge?.register(handlerName: "unlockPremium") { (_, callback) in
-                    UserDefaults.standard.set(true, forKey: "isPremiumUser")
-                    callback?("Success: Premium Unlocked")
-                }
-                
-                // 2. The Restricted Function
-                self.bridge?.register(handlerName: "premiumFeature") { [weak self] (parameters, callback) in
-                    guard isUserPremium() else {
-                        callback?("Error: This is a paid feature. Please upgrade.")
-                        return
-                    }
-                    
-                    // If they ARE premium, run the code
-                    DispatchQueue.main.async {
-                        let alert = UIAlertController(title: "Premium Access", message: "Executing paid function...", preferredStyle: .alert)
-                        alert.addAction(UIAlertAction(title: "OK", style: .default))
-                        self?.present(alert, animated: true)
-                    }
-                    callback?("Feature Executed")
-                }
-
-
-                self.bridge?.register(handlerName: "premiumFeature2") { [weak self] (parameters, callback) in
-                    // 1. Extract User ID from the JS call
-                    guard let data = parameters as? [String: Any],
-                          let userId = data["userId"] as? String else {
-                        callback?("Error: Missing User ID")
-                        return
-                    }
-                
-                    // 2. Define your Server URL
-                    let url = URL(string: "https://your-api.com/check-subscription?uid=\(userId)")!
-                    
-                    // 3. Perform a Native Network Request
-                    let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
-                        if let data = data, let responseString = String(data: data, encoding: .utf8) {
-                            
-                            // 4. Check if Server returned "Yes" (or 1, or a valid token)
-                            if responseString.contains("Yes") {
-                                DispatchQueue.main.async {
-                                    // --- PROTECTED NATIVE LOGIC START ---
-                                    let alert = UIAlertController(title: "Verified", message: "Premium access granted!", preferredStyle: .alert)
-                                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                                    self?.present(alert, animated: true)
-                                    // --- PROTECTED NATIVE LOGIC END ---
-                                    
-                                    callback?("Access Granted")
-                                }
-                            } else {
-                                callback?("Error: Subscription inactive")
-                            }
-                        } else {
-                            callback?("Error: Server unreachable")
-                        }
-                    }
-                    task.resume()
-                }
-
-                
+                  self.bridge?.register(handlerName: "premiumFeature2") { [weak self] (parameters, callback) in
+                      guard let data = parameters as? [String: Any],
+                            let userId = data["userId"] as? String else {
+                          callback?("Error: Missing User ID")
+                          return
+                      }
+                  
+                      let url = URL(string: "https://your-api.com/check-subscription?uid=\(userId)")!
+                      
+                      let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
+                          if let data = data, let responseString = String(data: data, encoding: .utf8) {
+                              
+                              if responseString.contains("Yes") {
+                                  DispatchQueue.main.async {
+                                      let alert = UIAlertController(title: "Verified", message: "Premium access granted!", preferredStyle: .alert)
+                                      alert.addAction(UIAlertAction(title: "OK", style: .default))
+                                      self?.present(alert, animated: true)
+                                      
+                                      callback?("Access Granted")
+                                  }
+                              } else {
+                                  callback?("Error: Subscription inactive")
+                              }
+                          } else {
+                              callback?("Error: Server unreachable")
+                          }
+                      }
+                      task.resume()
+                  }
+                  
                   let url = URL(string: "https://snippets.marketingpipeliners.com")!
                   webView.load(URLRequest(url: url))
               }
 
               func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                  // Call JS Handler from Native once page finishes loading
                   self.bridge?.call(handlerName: "testJavascriptHandler", data: ["foo": "before ready"], callback: { response in
                       print("JS responded: \(String(describing: response))")
                   })
 
-                  // Visual confirmation
                   webView.evaluateJavaScript("alert('Bridge Initialized');")
                   webView.evaluateJavaScript("window._SETTINGS.APPTYPE = 'ios';")
               }
 
-              // Handle JavaScript Alerts (alert, confirm, prompt)
               func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
                   let alert = UIAlertController(title: "JS Alert", message: message, preferredStyle: .alert)
                   alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
@@ -483,10 +466,10 @@ jobs:
               func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
                   let confirmAlert = UIAlertController(title: "JS Confirm", message: message, preferredStyle: .alert)
                   confirmAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                      completionHandler(false) // User pressed Cancel
+                      completionHandler(false)
                   })
                   confirmAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
-                      completionHandler(true) // User pressed OK
+                      completionHandler(true)
                   })
                   present(confirmAlert, animated: true)
               }
@@ -494,17 +477,16 @@ jobs:
               func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
                   let promptAlert = UIAlertController(title: "JS Prompt", message: prompt, preferredStyle: .alert)
                   
-                  // Add a text field for the user to input
                   promptAlert.addTextField { textField in
                       textField.text = defaultText
                   }
           
                   promptAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                      completionHandler(nil) // User pressed Cancel
+                      completionHandler(nil)
                   })
                   promptAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
                       let text = promptAlert.textFields?.first?.text
-                      completionHandler(text) // User entered some text
+                      completionHandler(text)
                   })
                   
                   present(promptAlert, animated: true)
@@ -512,7 +494,129 @@ jobs:
           }
           EOF
 
-          # 2. Create Info.plist for the project
+          # 2. Create ShareViewController.swift for the Share Extension
+          cat <<EOF > ShareViewController.swift
+          import UIKit
+          import Social
+          import MobileCoreServices
+          import UniformTypeIdentifiers
+
+          class ShareViewController: UIViewController {
+              
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  
+                  // Process the shared content
+                  if let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem {
+                      if let itemProvider = extensionItem.attachments?.first {
+                          
+                          // Handle Text
+                          if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+                              itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { (item, error) in
+                                  if let text = item as? String {
+                                      self.saveSharedData(text: text)
+                                  }
+                                  self.openMainApp()
+                              }
+                          }
+                          // Handle URL
+                          else if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                              itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, error) in
+                                  if let url = item as? URL {
+                                      self.saveSharedData(url: url.absoluteString)
+                                  }
+                                  self.openMainApp()
+                              }
+                          }
+                          // Handle plain text (for Notes app compatibility)
+                          else if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                              itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, error) in
+                                  if let text = item as? String {
+                                      self.saveSharedData(text: text)
+                                  }
+                                  self.openMainApp()
+                              }
+                          }
+                      }
+                  }
+              }
+              
+              func saveSharedData(text: String) {
+                  if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
+                      sharedDefaults.set(text, forKey: "SharedText")
+                      sharedDefaults.synchronize()
+                  }
+              }
+              
+              func saveSharedData(url: String) {
+                  if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
+                      sharedDefaults.set(url, forKey: "SharedURL")
+                      sharedDefaults.synchronize()
+                  }
+              }
+              
+              func openMainApp() {
+                  // Open the main app using URL scheme
+                  let url = URL(string: "webkitapp://shared")!
+                  var responder: UIResponder? = self
+                  while responder != nil {
+                      if let application = responder as? UIApplication {
+                          application.perform(#selector(openURL(_:)), with: url)
+                          break
+                      }
+                      responder = responder?.next
+                  }
+                  
+                  // Close the share extension
+                  self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+              }
+              
+              @objc func openURL(_ url: URL) {}
+          }
+          EOF
+
+          # 3. Create Info.plist for Share Extension
+          cat <<EOF > ShareExtension-Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>Share to WebKitApp</string>
+              <key>CFBundleExecutable</key>
+              <string>ShareExtension</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.webkitapp.ShareExtension</string>
+              <key>CFBundleName</key>
+              <string>ShareExtension</string>
+              <key>CFBundlePackageType</key>
+              <string>XPC!</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>NSExtension</key>
+              <dict>
+                  <key>NSExtensionAttributes</key>
+                  <dict>
+                      <key>NSExtensionActivationRule</key>
+                      <dict>
+                          <key>NSExtensionActivationSupportsText</key>
+                          <true/>
+                          <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+                          <integer>1</integer>
+                      </dict>
+                  </dict>
+                  <key>NSExtensionMainStoryboard</key>
+                  <string>MainInterface</string>
+                  <key>NSExtensionPointIdentifier</key>
+                  <string>com.apple.share-services</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          # 4. Create Main App Info.plist with URL scheme and App Groups
           cat <<EOF > Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -548,45 +652,166 @@ jobs:
               <array>
                   <string>com.example.webkitapp.refresh</string>
               </array>
+              <key>CFBundleURLTypes</key>
+              <array>
+                  <dict>
+                      <key>CFBundleURLSchemes</key>
+                      <array>
+                          <string>webkitapp</string>
+                      </array>
+                      <key>CFBundleURLName</key>
+                      <string>com.example.webkitapp</string>
+                  </dict>
+              </array>
           </dict>
           </plist>
           EOF
 
-      - name: Create Xcode Project
+          # 5. Create MainInterface.storyboard for Share Extension
+          cat <<EOF > MainInterface.storyboard
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="j1y-V4-xli">
+              <device id="retina6_1" orientation="portrait" appearance="light"/>
+              <dependencies>
+                  <deployment identifier="iOS"/>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
+                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="ceB-am-kn3">
+                      <objects>
+                          <viewController id="j1y-V4-xli" customClass="ShareViewController" customModule="ShareExtension" customModuleProvider="target" sceneMemberID="viewController">
+                          <view key="view" contentMode="scaleToFill" id="wbc-yd-nFH">
+                              <rect key="frame" x="0.0" y="0.0" width="414" height="896"/>
+                              <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                              <subviews>
+                                  <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Sharing to WebKitApp..." textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="9fh-lQ-2xg">
+                                      <rect key="frame" x="107" y="437.5" width="200" height="21"/>
+                                      <fontDescription key="fontDescription" type="system" pointSize="17"/>
+                                      <nil key="textColor"/>
+                                      <nil key="highlightedColor"/>
+                                  </label>
+                              </subviews>
+                              <viewLayoutGuide key="safeArea" id="9Zq-Fj-Qhn"/>
+                              <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+                              <constraints>
+                                  <constraint firstItem="9fh-lQ-2xg" firstAttribute="centerX" secondItem="wbc-yd-nFH" secondAttribute="centerX" id="2Uo-Vy-gUk"/>
+                                  <constraint firstItem="9fh-lQ-2xg" firstAttribute="centerY" secondItem="wbc-yd-nFH" secondAttribute="centerY" id="lKn-aB-vRr"/>
+                              </constraints>
+                          </view>
+                      </viewController>
+                      <placeholder placeholderIdentifier="IBFirstResponder" id="CEy-Cv-SGf" userLabel="First Responder" customClass="UIResponder" sceneMemberID="firstResponder"/>
+                  </objects>
+                  <point key="canvasLocation" x="119" y="149"/>
+              </scene>
+          </scenes>
+          <resources>
+              <systemColor name="systemBackgroundColor">
+                  <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+              </systemColor>
+          </resources>
+          </document>
+          EOF
+
+      - name: Create Xcode Project with Share Extension
         run: |
           gem install xcodeproj
           ruby -e "
           require 'xcodeproj'
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
           
-          # Create app target
+          # Create main app target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
           
-          # Add files to project and target membership
+          # Add files to main app
           app_delegate = project.new_file('AppDelegate.swift')
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
 
+          # Configure main app
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
             config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'WebKitApp.entitlements'
           end
+
+          # Create Share Extension target
+          share_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
           
-          # Ensure a shared scheme is created for CI visibility
+          # Add files to share extension
+          share_view_controller = project.new_file('ShareViewController.swift')
+          share_info_plist = project.new_file('ShareExtension-Info.plist')
+          share_storyboard = project.new_file('MainInterface.storyboard')
+          
+          share_target.add_file_references([share_view_controller, share_storyboard])
+
+          # Configure share extension
+          share_target.build_configurations.each do |config|
+            config.build_settings['INFOPLIST_FILE'] = 'ShareExtension-Info.plist'
+            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp.ShareExtension'
+            config.build_settings['SWIFT_VERSION'] = '5.0'
+            config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'ShareExtension.entitlements'
+            config.build_settings['SKIP_INSTALL'] = 'YES'
+          end
+
+          # Create target dependency
+          target.add_dependency(share_target)
+
+          # Create copy files build phase to embed the extension
+          copy_phase = target.new_copy_files_build_phase('Embed App Extensions')
+          copy_phase.dst_subfolder_spec = '13'
+          copy_phase.add_file_reference(share_target.product_reference)
+
           project.recreate_user_schemes
           project.save
           "
+
+          # Create App Groups entitlements for main app
+          cat <<EOF > WebKitApp.entitlements
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.application-groups</key>
+              <array>
+                  <string>group.com.example.webkitapp</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+          # Create App Groups entitlements for share extension
+          cat <<EOF > ShareExtension.entitlements
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.application-groups</key>
+              <array>
+                  <string>group.com.example.webkitapp</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
 
       - name: Create and Install Pods
         run: |
           cat <<EOF > Podfile
           platform :ios, '15.0'
           use_frameworks!
+
           target 'WebKitApp' do
             pod 'WKWebViewJavascriptBridge', '~> 1.2.0'
+          end
+
+          target 'ShareExtension' do
+            # Share extension doesn't need any pods
           end
 
           post_install do |installer|
