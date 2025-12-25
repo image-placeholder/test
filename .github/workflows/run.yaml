@@ -71,6 +71,34 @@ jobs:
               }
 
 
+
+          // MARK: - Bridge Response Helper
+          struct BridgeResponse {
+              static func success(_ data: Any? = nil, message: String? = nil) -> [String: Any] {
+                  var response: [String: Any] = ["success": true]
+                  if let data = data {
+                      response["data"] = data
+                  }
+                  if let message = message {
+                      response["message"] = message
+                  }
+                  return response
+              }
+              
+              static func error(_ message: String, code: String? = nil, details: Any? = nil) -> [String: Any] {
+                  var response: [String: Any] = [
+                      "success": false,
+                      "error": message
+                  ]
+                  if let code = code {
+                      response["errorCode"] = code
+                  }
+                  if let details = details {
+                      response["details"] = details
+                  }
+                  return response
+              }
+          }
               
               override func loadView() {
                   let webConfiguration = WKWebViewConfiguration()
@@ -287,6 +315,26 @@ jobs:
                   }
               }
 
+
+           self.bridge?.register(handlerName: "requestNotificationPermission") { (parameters, callback) in
+                // 1. Request Notification Permission
+                let center = UNUserNotificationCenter.current()
+                
+                center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                    if let error = error {
+                        // If error occurs during permission request, callback with error message
+                        callback?(false)
+                    } else if granted {
+                        // If permission is granted, callback success
+                        callback?(granted)
+                    } else {
+                        // If permission is denied, callback denial message
+                        callback?(false)
+                    }
+                }
+            }
+
+
               
               self.bridge?.register(handlerName: "lockOrientation") { (parameters, _) in
                   if let orientation = (parameters as? [String: Any])?["orientation"] as? String {
@@ -470,6 +518,15 @@ jobs:
                   <key>NSAllowsArbitraryLoads</key>
                   <true/>
               </dict>
+              <key>UIBackgroundModes</key>
+              <array>
+                  <string>fetch</string>
+                  <string>processing</string>
+              </array>
+              <key>BGTaskSchedulerPermittedIdentifiers</key>
+              <array>
+                  <string>com.example.webkitapp.refresh</string>
+              </array>
           </dict>
           </plist>
           EOF
