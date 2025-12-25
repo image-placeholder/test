@@ -37,6 +37,7 @@ jobs:
               func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
                   window = UIWindow(frame: UIScreen.main.bounds)
                   let vc = ViewController()
+                  mainViewController = vc
                   window?.rootViewController = vc
                   window?.makeKeyAndVisible()
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
@@ -53,7 +54,7 @@ jobs:
                   
                   if url.scheme == "mywebkitapp", url.host == "share" {
                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                      let noteText = components?.queryItems?.first(where: { $0.name == "text" })?.value ?? ""
+                      let noteText = components?.queryItems?.first(where: { \$0.name == "text" })?.value ?? ""
                       
                       if let rootVC = mainViewController {
                           DispatchQueue.main.async {
