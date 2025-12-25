@@ -595,6 +595,7 @@ jobs:
           # 1. Create Main App Target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
           app_delegate = project.new_file('AppDelegate.swift')
+          info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
 
           # 2. Create Share Extension Target
@@ -606,6 +607,7 @@ jobs:
           # 3. Setup Build Settings for Main App
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
+            config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
             config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.example.webkitapp'
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
@@ -625,7 +627,7 @@ jobs:
           
           # Create copy files build phase to embed the extension in the app bundle
           copy_phase = target.new_copy_files_build_phase('Embed App Extensions')
-          copy_phase.dst_subfolder_spec = '13' # 13 is the code for 'PlugIns' folder
+          copy_phase.dst_subfolder_spec = '13'
           copy_phase.add_file_reference(share_target.product_reference)
 
           project.recreate_user_schemes
@@ -648,7 +650,6 @@ jobs:
                       if itemProvider.hasItemConformingToTypeIdentifier(kUTTypePlainText as String) {
                           itemProvider.loadItem(forTypeIdentifier: kUTTypePlainText as String, options: nil) { (text, error) in
                               if let note = text as? String {
-                                  // This triggers your app's openURL in AppDelegate
                                   let urlText = "mywebkitapp://share?text=\(note.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
                                   if let url = URL(string: urlText) {
                                       var responder: UIResponder? = self
@@ -669,7 +670,6 @@ jobs:
           }
           EOF
 
-
       - name: Create Share Info Plist
         run: |
           cat <<EOF > Share-Info.plist
@@ -682,7 +682,7 @@ jobs:
                   <key>NSExtensionAttributes</key>
                   <dict>
                       <key>NSExtensionActivationRule</key>
-                      <string>SUBQUERY (extensionItems, \$extensionItem, ANY \$extensionItem.attachments, \$attachment, ANY \$attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count > 0</string>
+                      <string>SUBQUERY (extensionItems, \$extensionItem, SUBQUERY (\$extensionItem.attachments, \$attachment, ANY \$attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count > 0).@count > 0</string>
                   </dict>
                   <key>NSExtensionPointIdentifier</key>
                   <string>com.apple.share-services</string>
