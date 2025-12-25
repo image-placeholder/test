@@ -587,18 +587,19 @@ jobs:
           ruby -e "
           require 'xcodeproj'
           require 'nokogiri'
-          
+          require 'fileutils'  # For creating directories
+      
           # Create a new Xcode project
           project = Xcodeproj::Project.new('WebKitApp.xcodeproj')
-          
+      
           # Create app target
           target = project.new_target(:application, 'WebKitApp', :ios, '15.0')
-          
+      
           # Add app files (AppDelegate.swift, Info.plist)
           app_delegate = project.new_file('AppDelegate.swift')
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
-          
+      
           # Set build configurations for the app target
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
@@ -607,14 +608,16 @@ jobs:
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
-          
+      
           # Create Share Extension target
           extension_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
           extension_target.product_type = 'com.apple.product-type.app-extension'
-          
-
-          
-          # Generate XML content from a hash
+      
+          # Ensure the ShareExtension directory exists
+          extension_dir = 'ShareExtension'
+          FileUtils.mkdir_p(extension_dir) unless File.exist?(extension_dir)
+      
+          # Generate XML content for the extension's Info.plist
           extension_plist = {
             'CFBundleDisplayName' => 'Send to WebKit',
             'NSExtension' => {
@@ -625,7 +628,7 @@ jobs:
               'NSExtensionPointIdentifier' => 'com.apple.share-services'
             }
           }
-          
+
           # Use Nokogiri to convert the hash to XML format
           builder = Nokogiri::XML::Builder.new(encoding: 'UTF-8') do |xml|
             xml.plist(version: '1.0') {
@@ -647,12 +650,11 @@ jobs:
               }
             }
           end
-          
-          # Save the generated XML to a file
-          extension_plist_file = 'ShareExtension/Info.plist'
+      
+          # Save the generated XML to the Info.plist file for the extension
+          extension_plist_file = "#{extension_dir}/Info.plist"
           File.write(extension_plist_file, builder.to_xml(indent: 2))
-
-          
+      
           # Add the Info.plist to the extension target
           extension_target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = extension_plist_file
@@ -661,11 +663,12 @@ jobs:
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
           end
-          
+      
           # Ensure a shared scheme is created for CI visibility
           project.recreate_user_schemes
           project.save
           "
+
 
       - name: Create and Install Pods
         run: |
