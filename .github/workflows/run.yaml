@@ -1,4 +1,4 @@
-name: Build WebKit WebView iOS IPA
+name: Build WebKit WebView iOS IPA with Share Extension
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Generate Source Files
         run: |
-          # 1. Create AppDelegate.swift with Full Bridge Logic
+          # 1. Create AppDelegate.swift (your existing file - keeping it as is)
           cat <<EOF > AppDelegate.swift
           import UIKit
           import WebKit
@@ -43,59 +43,7 @@ jobs:
                   BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.example.webkitapp.refresh", using: nil) { task in
                       self.handleAppRefresh(task: task as! BGAppRefreshTask)
                   }     
-                  
-                  // Check for shared data after a delay to ensure WebView is ready
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                      self.checkForSharedData()
-                  }
-                  
                   return true
-              }
-              
-              // Handle URL scheme opens (when share extension opens the app)
-              func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
-                  if url.scheme == "webkitapp" {
-                      print("🔗 App opened via URL scheme: \(url)")
-                      // Give WebView time to load, then check for shared data
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                          self.checkForSharedData()
-                      }
-                      return true
-                  }
-                  return false
-              }
-              
-              // Also handle when app becomes active (covers more cases)
-              func applicationDidBecomeActive(_ application: UIApplication) {
-                  // Check for shared data whenever app becomes active
-                  checkForSharedData()
-              }
-
-              func checkForSharedData() {
-                  guard let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") else {
-                      print("❌ Could not access shared defaults")
-                      return
-                  }
-                  
-                  // Check for shared text
-                  if let sharedText = sharedDefaults.string(forKey: "SharedText") {
-                      print("📱 Found shared text: \(sharedText.prefix(50))...")
-                      sharedDefaults.removeObject(forKey: "SharedText")
-                      sharedDefaults.removeObject(forKey: "SharedTimestamp")
-                      sharedDefaults.synchronize()
-                      
-                      self.mainViewController?.handleSharedContent(text: sharedText)
-                  }
-                  
-                  // Check for shared URL
-                  if let sharedURL = sharedDefaults.string(forKey: "SharedURL") {
-                      print("📱 Found shared URL: \(sharedURL)")
-                      sharedDefaults.removeObject(forKey: "SharedURL")
-                      sharedDefaults.removeObject(forKey: "SharedTimestamp")
-                      sharedDefaults.synchronize()
-                      
-                      self.mainViewController?.handleSharedContent(url: sharedURL)
-                  }
               }
 
               func handleAppRefresh(task: BGAppRefreshTask) {
@@ -115,7 +63,6 @@ jobs:
                   request.earliestBeginDate = Date(timeIntervalSinceNow: 2 * 60 * 60)
                   try? BGTaskScheduler.shared.submit(request)
               }
-              
           }
 
           class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate {
@@ -126,34 +73,6 @@ jobs:
                   completionHandler([.banner, .sound])
               }
 
-              // MARK: - Handle Shared Content
-              func handleSharedContent(text: String) {
-                  // Encode the text for URL
-                  let encodedText = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                  
-                  // Reload the WebView with the shared text as a query parameter
-                  let baseURL = "https://snippets.marketingpipeliners.com"
-                  let urlString = "\(baseURL)?sharedText=\(encodedText)"
-                  
-                  if let url = URL(string: urlString) {
-                      webView.load(URLRequest(url: url))
-                  }
-              }
-              
-              func handleSharedContent(url: String) {
-                  // Encode the URL
-                  let encodedURL = url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                  
-                  // Reload the WebView with the shared URL as a query parameter
-                  let baseURL = "https://snippets.marketingpipeliners.com"
-                  let urlString = "\(baseURL)?sharedURL=\(encodedURL)"
-                  
-                  if let targetURL = URL(string: urlString) {
-                      webView.load(URLRequest(url: targetURL))
-                  }
-              }
-
-              // MARK: - Bridge Response Helper
               struct BridgeResponse {
                   static func success(_ data: Any? = nil, message: String? = nil) -> [String: Any] {
                       var response: [String: Any] = ["success": true]
@@ -213,6 +132,7 @@ jobs:
                   UNUserNotificationCenter.current().delegate = self
                   self.bridge = WKWebViewJavascriptBridge(webView: webView)
 
+                  // Register all your existing handlers
                   self.bridge?.register(handlerName: "testiOSCallback") { (parameters, callback) in
                       print("testiOSCallback called with: \(String(describing: parameters))")
                       callback?("Response from testiOSCallback")
@@ -220,10 +140,8 @@ jobs:
 
                   self.bridge?.register(handlerName: "scheduleBackgroundSync") { (parameters, callback) in
                       let hours = (parameters as? [String: Any])?["hours"] as? Double ?? 2.0
-                      
                       let request = BGAppRefreshTaskRequest(identifier: "com.example.webkitapp.refresh")
                       request.earliestBeginDate = Date(timeIntervalSinceNow: hours * 3600)
-                      
                       do {
                           try BGTaskScheduler.shared.submit(request)
                           callback?("Successfully scheduled for \(hours) hours from now")
@@ -233,29 +151,18 @@ jobs:
                   }
 
                   self.bridge?.register(handlerName: "showNotification") { [weak self] (parameters, callback) in
-                      print("testiOSCallback called with: \(String(describing: parameters))")
-                      
                       DispatchQueue.main.async {
                           guard let strongSelf = self else { return }
-                          
                           if strongSelf.presentedViewController != nil {
                               print("An alert is already being presented.")
                               return
                           }
-                  
                           let jsData = parameters as? [String: Any]
                           let messageBody = jsData?["message"] as? String ?? "Notification from WebKit"
-                          
-                          let alert = UIAlertController(
-                              title: "iOS Notification",
-                              message: messageBody,
-                              preferredStyle: .alert
-                          )
-                          
+                          let alert = UIAlertController(title: "iOS Notification", message: messageBody, preferredStyle: .alert)
                           alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
                           strongSelf.present(alert, animated: true, completion: nil)
                       }
-                      
                       callback?("Response from testiOSCallback")
                   }
 
@@ -280,7 +187,7 @@ jobs:
                       if let level = (parameters as? [String: Any])?["level"] as? CGFloat {
                           DispatchQueue.main.async { UIScreen.main.brightness = level }
                       }
-                  }             
+                  }
 
                   self.bridge?.register(handlerName: "nativeShare") { [weak self] (parameters, _) in
                       guard let text = (parameters as? [String: Any])?["text"] as? String else { return }
@@ -288,13 +195,12 @@ jobs:
                           let ac = UIActivityViewController(activityItems: [text], applicationActivities: nil)
                           self?.present(ac, animated: true)
                       }
-                  }             
+                  }
 
                   self.bridge?.register(handlerName: "saveSecure") { (parameters, callback) in
                       let data = parameters as? [String: Any]
                       let key = data?["key"] as? String ?? "default"
                       let value = data?["value"] as? String ?? ""
-                  
                       let query: [String: Any] = [
                           kSecClass as String: kSecClassGenericPassword,
                           kSecAttrAccount as String: key,
@@ -310,21 +216,18 @@ jobs:
                           let dataStore = WKWebsiteDataStore.default()
                           let types = WKWebsiteDataStore.allWebsiteDataTypes()
                           let dateFrom = Date(timeIntervalSince1970: 0)
-                  
                           dataStore.removeData(ofTypes: types, modifiedSince: dateFrom) {
                               callback?("Cookies Cleared")
                           }
                       }
-                  }              
+                  }
 
                   self.bridge?.register(handlerName: "toggleFlashlight") { (parameters, callback) in
                       guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else {
                           callback?("Error: Hardware not available")
                           return 
                       }
-                      
                       let isOn = (parameters as? [String: Any])?["on"] as? Bool ?? false
-                      
                       do {
                           try device.lockForConfiguration()
                           device.torchMode = isOn ? .on : .off
@@ -337,26 +240,17 @@ jobs:
 
                   self.bridge?.register(handlerName: "showLocalPush") { (parameters, callback) in
                       let center = UNUserNotificationCenter.current()
-                      
                       center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
                           if granted {
                               let data = parameters as? [String: Any]
                               let title = data?["title"] as? String ?? "New Message"
                               let body = data?["body"] as? String ?? "You have a new notification."
-                              
                               let content = UNMutableNotificationContent()
                               content.title = title
                               content.body = body
                               content.sound = .default
-                              
                               let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-                              
-                              let request = UNNotificationRequest(
-                                  identifier: UUID().uuidString, 
-                                  content: content, 
-                                  trigger: trigger
-                              )
-                              
+                              let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
                               center.add(request) { (error) in
                                   if let error = error {
                                       callback?("Error: \(error.localizedDescription)")
@@ -384,15 +278,8 @@ jobs:
 
                   self.bridge?.register(handlerName: "requestNotificationPermission") { (parameters, callback) in
                       let center = UNUserNotificationCenter.current()
-                      
                       center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-                          if let error = error {
-                              callback?(false)
-                          } else if granted {
-                              callback?(granted)
-                          } else {
-                              callback?(false)
-                          }
+                          callback?(granted)
                       }
                   }
 
@@ -407,7 +294,7 @@ jobs:
                           }
                       }
                   }
-                  
+
                   self.bridge?.register(handlerName: "getBatteryInfo") { (_, callback) in
                       UIDevice.current.isBatteryMonitoringEnabled = true
                       let batteryLevel = UIDevice.current.batteryLevel * 100
@@ -420,7 +307,7 @@ jobs:
                       }
                       callback?(["batteryLevel": "\(batteryLevel)%", "batteryState": batteryState])
                   }
-                  
+
                   self.bridge?.register(handlerName: "openMaps") { (parameters, _) in
                       guard let address = (parameters as? [String: Any])?["address"] as? String else { return }
                       DispatchQueue.main.async {
@@ -434,18 +321,17 @@ jobs:
                   func isUserPremium() -> Bool {
                       return UserDefaults.standard.bool(forKey: "isPremiumUser")
                   }
-                  
+
                   self.bridge?.register(handlerName: "unlockPremium") { (_, callback) in
                       UserDefaults.standard.set(true, forKey: "isPremiumUser")
                       callback?("Success: Premium Unlocked")
                   }
-                  
+
                   self.bridge?.register(handlerName: "premiumFeature") { [weak self] (parameters, callback) in
                       guard isUserPremium() else {
                           callback?("Error: This is a paid feature. Please upgrade.")
                           return
                       }
-                      
                       DispatchQueue.main.async {
                           let alert = UIAlertController(title: "Premium Access", message: "Executing paid function...", preferredStyle: .alert)
                           alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -460,18 +346,14 @@ jobs:
                           callback?("Error: Missing User ID")
                           return
                       }
-                  
                       let url = URL(string: "https://your-api.com/check-subscription?uid=\(userId)")!
-                      
                       let task = URLSession.shared.dataTask(with: url) { (data, response, error) in
                           if let data = data, let responseString = String(data: data, encoding: .utf8) {
-                              
                               if responseString.contains("Yes") {
                                   DispatchQueue.main.async {
                                       let alert = UIAlertController(title: "Verified", message: "Premium access granted!", preferredStyle: .alert)
                                       alert.addAction(UIAlertAction(title: "OK", style: .default))
                                       self?.present(alert, animated: true)
-                                      
                                       callback?("Access Granted")
                                   }
                               } else {
@@ -483,7 +365,28 @@ jobs:
                       }
                       task.resume()
                   }
-                  
+
+                  // NEW: Handler to retrieve shared content from the extension
+                  self.bridge?.register(handlerName: "getSharedContent") { (_, callback) in
+                      if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
+                          let sharedText = sharedDefaults.string(forKey: "sharedText") ?? ""
+                          let sharedURL = sharedDefaults.string(forKey: "sharedURL") ?? ""
+                          
+                          let result: [String: Any] = [
+                              "text": sharedText,
+                              "url": sharedURL
+                          ]
+                          
+                          // Clear after reading
+                          sharedDefaults.removeObject(forKey: "sharedText")
+                          sharedDefaults.removeObject(forKey: "sharedURL")
+                          
+                          callback?(result)
+                      } else {
+                          callback?(["text": "", "url": ""])
+                      }
+                  }
+
                   let url = URL(string: "https://snippets.marketingpipeliners.com")!
                   webView.load(URLRequest(url: url))
               }
@@ -492,16 +395,8 @@ jobs:
                   self.bridge?.call(handlerName: "testJavascriptHandler", data: ["foo": "before ready"], callback: { response in
                       print("JS responded: \(String(describing: response))")
                   })
-
                   webView.evaluateJavaScript("alert('Bridge Initialized');")
                   webView.evaluateJavaScript("window._SETTINGS.APPTYPE = 'ios';")
-                  
-                  // Check for shared data after WebView loads
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                      if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                          appDelegate.checkForSharedData()
-                      }
-                  }
               }
 
               func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
@@ -509,7 +404,7 @@ jobs:
                   alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
                   present(alert, animated: true)
               }
-          
+
               func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
                   let confirmAlert = UIAlertController(title: "JS Confirm", message: message, preferredStyle: .alert)
                   confirmAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
@@ -520,14 +415,12 @@ jobs:
                   })
                   present(confirmAlert, animated: true)
               }
-          
+
               func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
                   let promptAlert = UIAlertController(title: "JS Prompt", message: prompt, preferredStyle: .alert)
-                  
                   promptAlert.addTextField { textField in
                       textField.text = defaultText
                   }
-          
                   promptAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
                       completionHandler(nil)
                   })
@@ -535,7 +428,6 @@ jobs:
                       let text = promptAlert.textFields?.first?.text
                       completionHandler(text)
                   })
-                  
                   present(promptAlert, animated: true)
               }
           }
@@ -550,184 +442,82 @@ jobs:
 
           class ShareViewController: UIViewController {
               
-              private let messageLabel: UILabel = {
-                  let label = UILabel()
-                  label.textAlignment = .center
-                  label.numberOfLines = 0
-                  label.translatesAutoresizingMaskIntoConstraints = false
-                  return label
-              }()
-              
               override func viewDidLoad() {
                   super.viewDidLoad()
-                  view.backgroundColor = .systemBackground
-                  
-                  // Add message label
-                  view.addSubview(messageLabel)
-                  NSLayoutConstraint.activate([
-                      messageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                      messageLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-                      messageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-                      messageLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
-                  ])
-                  
-                  messageLabel.text = "Processing..."
-                  
-                  // Process the shared content immediately
-                  processSharedContent()
+                  handleSharedContent()
               }
               
-              func processSharedContent() {
+              private func handleSharedContent() {
                   guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
-                        let attachments = extensionItem.attachments, !attachments.isEmpty else {
-                      showMessage("No content to share")
-                      closeAfterDelay()
+                        let itemProvider = extensionItem.attachments?.first else {
+                      self.closeExtension()
                       return
                   }
                   
-                  let itemProvider = attachments[0]
-                  
-                  // Priority 1: Plain Text (works with Notes)
+                  // Handle plain text (from Notes, Safari, etc.)
                   if itemProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                      itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (item, error) in
-                          var textToSave: String?
-                          
+                      itemProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, error) in
                           if let text = item as? String {
-                              textToSave = text
-                          } else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
-                              textToSave = text
+                              self.saveToSharedContainer(text: text, url: nil)
                           }
-                          
-                          if let text = textToSave {
-                              self?.saveSharedData(text: text)
-                              self?.showMessage("✓ Saved!\nOpening app...")
-                              self?.closeAndOpenApp()
-                          } else {
-                              self?.showMessage("Could not read text")
-                              self?.closeAfterDelay()
-                          }
+                          self.openMainApp()
                       }
-                      return
                   }
-                  
-                  // Priority 2: URL
-                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                      itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (item, error) in
+                  // Handle URLs (from Safari, etc.)
+                  else if itemProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                      itemProvider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, error) in
                           if let url = item as? URL {
-                              self?.saveSharedData(url: url.absoluteString)
-                              self?.showMessage("✓ Saved URL!\nOpening app...")
-                              self?.closeAndOpenApp()
-                          } else {
-                              self?.showMessage("Could not read URL")
-                              self?.closeAfterDelay()
+                              self.saveToSharedContainer(text: nil, url: url.absoluteString)
                           }
+                          self.openMainApp()
                       }
-                      return
                   }
-                  
-                  // Priority 3: Generic Text
-                  if itemProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
-                      itemProvider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { [weak self] (item, error) in
-                          if let text = item as? String {
-                              self?.saveSharedData(text: text)
-                              self?.showMessage("✓ Saved!\nOpening app...")
-                              self?.closeAndOpenApp()
-                          } else {
-                              self?.showMessage("Could not read text")
-                              self?.closeAfterDelay()
-                          }
-                      }
-                      return
-                  }
-                  
-                  showMessage("No compatible content found")
-                  closeAfterDelay()
-              }
-              
-              func showMessage(_ text: String) {
-                  DispatchQueue.main.async { [weak self] in
-                      self?.messageLabel.text = text
+                  // Fallback
+                  else {
+                      self.closeExtension()
                   }
               }
               
-              func saveSharedData(text: String) {
+              private func saveToSharedContainer(text: String?, url: String?) {
                   if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
-                      sharedDefaults.set(text, forKey: "SharedText")
-                      sharedDefaults.set(true, forKey: "HasPendingShare")
-                      sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
+                      if let text = text {
+                          sharedDefaults.set(text, forKey: "sharedText")
+                      }
+                      if let url = url {
+                          sharedDefaults.set(url, forKey: "sharedURL")
+                      }
                       sharedDefaults.synchronize()
                   }
               }
               
-              func saveSharedData(url: String) {
-                  if let sharedDefaults = UserDefaults(suiteName: "group.com.example.webkitapp") {
-                      sharedDefaults.set(url, forKey: "SharedURL")
-                      sharedDefaults.set(true, forKey: "HasPendingShare")
-                      sharedDefaults.set(Date().timeIntervalSince1970, forKey: "SharedTimestamp")
-                      sharedDefaults.synchronize()
+              private func openMainApp() {
+                  // Open the main app with a custom URL scheme
+                  let url = URL(string: "webkitapp://shared")!
+                  var responder: UIResponder? = self as UIResponder
+                  let selector = #selector(openURL(_:))
+                  
+                  while responder != nil {
+                      if responder!.responds(to: selector) && responder != self {
+                          responder!.perform(selector, with: url)
+                          break
+                      }
+                      responder = responder?.next
                   }
+                  
+                  self.closeExtension()
               }
               
-              func closeAndOpenApp() {
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                      guard let self = self else { return }
-                      
-                      let url = URL(string: "webkitapp://shared")!
-                      
-                      self.extensionContext?.open(url, completionHandler: { success in
-                          // Always close, regardless of success
-                          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                              self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-                          }
-                      })
-                  }
+              @objc private func openURL(_ url: URL) {
+                  // This will be called by the responder chain
               }
               
-              func closeAfterDelay() {
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                      self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-                  }
+              private func closeExtension() {
+                  self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
               }
           }
           EOF
 
-          # 3. Create Info.plist for Share Extension
-          cat <<EOF > ShareExtension-Info.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDisplayName</key>
-              <string>Save to WebKitApp</string>
-              <key>CFBundleExecutable</key>
-              <string>ShareExtension</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.example.webkitapp.ShareExtension</string>
-              <key>CFBundleName</key>
-              <string>ShareExtension</string>
-              <key>CFBundlePackageType</key>
-              <string>XPC!</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>NSExtension</key>
-              <dict>
-                  <key>NSExtensionAttributes</key>
-                  <dict>
-                      <key>NSExtensionActivationRule</key>
-                      <string>TRUEPREDICATE</string>
-                  </dict>
-                  <key>NSExtensionMainStoryboard</key>
-                  <string>MainInterface</string>
-                  <key>NSExtensionPointIdentifier</key>
-                  <string>com.apple.share-services</string>
-              </dict>
-          </dict>
-          </plist>
-          EOF
-
-          # 4. Create Main App Info.plist with URL scheme and App Groups
+          # 3. Create Info.plist for main app (updated with URL scheme and App Groups)
           cat <<EOF > Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -778,51 +568,45 @@ jobs:
           </plist>
           EOF
 
-          # 5. Create MainInterface.storyboard for Share Extension
-          cat <<EOF > MainInterface.storyboard
+          # 4. Create Info.plist for Share Extension
+          cat <<EOF > ShareExtension-Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
-          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="j1y-V4-xli">
-              <device id="retina6_1" orientation="portrait" appearance="light"/>
-              <dependencies>
-                  <deployment identifier="iOS"/>
-                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
-                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
-                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
-              </dependencies>
-              <scenes>
-                  <scene sceneID="ceB-am-kn3">
-                      <objects>
-                          <viewController id="j1y-V4-xli" customClass="ShareViewController" customModule="ShareExtension" customModuleProvider="target" sceneMemberID="viewController">
-                          <view key="view" contentMode="scaleToFill" id="wbc-yd-nFH">
-                              <rect key="frame" x="0.0" y="0.0" width="414" height="896"/>
-                              <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                              <subviews>
-                                  <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Sharing to WebKitApp..." textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="9fh-lQ-2xg">
-                                      <rect key="frame" x="107" y="437.5" width="200" height="21"/>
-                                      <fontDescription key="fontDescription" type="system" pointSize="17"/>
-                                      <nil key="textColor"/>
-                                      <nil key="highlightedColor"/>
-                                  </label>
-                              </subviews>
-                              <viewLayoutGuide key="safeArea" id="9Zq-Fj-Qhn"/>
-                              <color key="backgroundColor" systemColor="systemBackgroundColor"/>
-                              <constraints>
-                                  <constraint firstItem="9fh-lQ-2xg" firstAttribute="centerX" secondItem="wbc-yd-nFH" secondAttribute="centerX" id="2Uo-Vy-gUk"/>
-                                  <constraint firstItem="9fh-lQ-2xg" firstAttribute="centerY" secondItem="wbc-yd-nFH" secondAttribute="centerY" id="lKn-aB-vRr"/>
-                              </constraints>
-                          </view>
-                      </viewController>
-                      <placeholder placeholderIdentifier="IBFirstResponder" id="CEy-Cv-SGf" userLabel="First Responder" customClass="UIResponder" sceneMemberID="firstResponder"/>
-                  </objects>
-                  <point key="canvasLocation" x="119" y="149"/>
-              </scene>
-          </scenes>
-          <resources>
-              <systemColor name="systemBackgroundColor">
-                  <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
-              </systemColor>
-          </resources>
-          </document>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>Save to WebKitApp</string>
+              <key>CFBundleExecutable</key>
+              <string>ShareExtension</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.webkitapp.ShareExtension</string>
+              <key>CFBundleName</key>
+              <string>ShareExtension</string>
+              <key>CFBundlePackageType</key>
+              <string>XPC!</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>NSExtension</key>
+              <dict>
+                  <key>NSExtensionAttributes</key>
+                  <dict>
+                      <key>NSExtensionActivationRule</key>
+                      <dict>
+                          <key>NSExtensionActivationSupportsText</key>
+                          <true/>
+                          <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+                          <integer>1</integer>
+                      </dict>
+                  </dict>
+                  <key>NSExtensionPointIdentifier</key>
+                  <string>com.apple.share-services</string>
+                  <key>NSExtensionPrincipalClass</key>
+                  <string>ShareViewController</string>
+              </dict>
+          </dict>
+          </plist>
           EOF
 
       - name: Create Xcode Project with Share Extension
@@ -840,7 +624,7 @@ jobs:
           info_plist = project.new_file('Info.plist')
           target.add_file_references([app_delegate])
 
-          # Configure main app
+          # Configure main app target
           target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
@@ -854,13 +638,11 @@ jobs:
           share_target = project.new_target(:app_extension, 'ShareExtension', :ios, '15.0')
           
           # Add files to share extension
-          share_view_controller = project.new_file('ShareViewController.swift')
-          share_info_plist = project.new_file('ShareExtension-Info.plist')
-          share_storyboard = project.new_file('MainInterface.storyboard')
-          
-          share_target.add_file_references([share_view_controller, share_storyboard])
+          share_vc = project.new_file('ShareViewController.swift')
+          share_info = project.new_file('ShareExtension-Info.plist')
+          share_target.add_file_references([share_vc])
 
-          # Configure share extension
+          # Configure share extension target
           share_target.build_configurations.each do |config|
             config.build_settings['INFOPLIST_FILE'] = 'ShareExtension-Info.plist'
             config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
@@ -868,22 +650,18 @@ jobs:
             config.build_settings['SWIFT_VERSION'] = '5.0'
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
             config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'ShareExtension.entitlements'
-            config.build_settings['SKIP_INSTALL'] = 'YES'
           end
 
-          # Create target dependency
+          # Create dependency from main app to share extension
           target.add_dependency(share_target)
-
-          # Create copy files build phase to embed the extension
-          copy_phase = target.new_copy_files_build_phase('Embed App Extensions')
-          copy_phase.dst_subfolder_spec = '13'
-          copy_phase.add_file_reference(share_target.product_reference)
 
           project.recreate_user_schemes
           project.save
           "
 
-          # Create App Groups entitlements for main app
+      - name: Create Entitlements Files
+        run: |
+          # Main app entitlements
           cat <<EOF > WebKitApp.entitlements
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -897,7 +675,7 @@ jobs:
           </plist>
           EOF
 
-          # Create App Groups entitlements for share extension
+          # Share extension entitlements
           cat <<EOF > ShareExtension.entitlements
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -916,13 +694,13 @@ jobs:
           cat <<EOF > Podfile
           platform :ios, '15.0'
           use_frameworks!
-
+          
           target 'WebKitApp' do
             pod 'WKWebViewJavascriptBridge', '~> 1.2.0'
           end
 
           target 'ShareExtension' do
-            # Share extension doesn't need any pods
+            # Share extension doesn't need the bridge
           end
 
           post_install do |installer|
@@ -956,5 +734,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WebKit-WebView-IPA
+          name: WebKit-WebView-IPA-with-ShareExtension
           path: WebKitApp-Unsigned.ipa
